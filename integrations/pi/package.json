@@ -1,0 +1,38 @@
+{
+	"name": "messh-pi",
+	"version": "0.1.0",
+	"private": true,
+	"description": "pi extension: use the tools of your messh LAN mesh (other devices' GPUs, local AI services, browsers, files and jobs) as native pi tools",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/dominic-codespoti/messh.git",
+		"directory": "integrations/pi"
+	},
+	"type": "module",
+	"keywords": ["pi-package", "messh", "mcp"],
+	"pi": {
+		"extensions": ["./index.ts"]
+	},
+	"scripts": {
+		"check": "tsc --noEmit",
+		"test": "node --test lib.test.ts"
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"peerDependenciesMeta": {
+		"@mariozechner/pi-coding-agent": { "optional": true },
+		"typebox": { "optional": true }
+	},
+	"devDependencies": {
+		"@mariozechner/pi-coding-agent": "0.73.1",
+		"@types/node": "^24.3.0",
+		"typebox": "^1.1.24",
+		"typescript": "~5.9.3"
+	},
+	"engines": {
+		"node": ">=20.6.0"
+	}
+}

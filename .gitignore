@@ -1,0 +1,43 @@
+# Local build and verification outputs.
+/bin/
+/build/
+/dist/
+/.release/
+/messh
+/messh.exe
+/messh-linux-*
+/messh-windows-*
+/*.test
+/*.out
+/coverage/
+
+# Installed JavaScript dependencies; keep package-lock.json tracked.
+node_modules/
+
+# Local environment secrets.
+/.env
+/.env.*
+
+# Runtime state when --state points at the checkout or a local state folder.
+# Root anchoring keeps similarly named source and test fixtures visible.
+/.messh/
+/state/
+/messh-state/
+/identity/
+/agents/
+/browser/
+/jobs/
+/ws/
+/artifacts/
+/peers.json
+/config.json
+/run.json
+/rules.json
+/services.json
+/browser.json
+/schedules.json
+/audit.jsonl
+/*.token
+/*.pem
+/*.key
+/*.crt

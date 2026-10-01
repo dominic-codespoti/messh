@@ -1,0 +1,183 @@
+
+Rule Name:                            python.exe
+----------------------------------------------------------------------
+Description:                          python.exe
+Enabled:                              Yes
+Direction:                            In
+Profiles:                             Public
+Grouping:                             
+LocalIP:                              Any
+RemoteIP:                             Any
+Protocol:                             UDP
+LocalPort:                            Any
+RemotePort:                           Any
+Edge traversal:                       Defer to user
+Program:                              C:\users\example\appdata\roaming\example-runtime\python\python.exe
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Allow
+
+Rule Name:                            python.exe
+----------------------------------------------------------------------
+Description:                          python.exe
+Enabled:                              Yes
+Direction:                            In
+Profiles:                             Public
+Grouping:                             
+LocalIP:                              Any
+RemoteIP:                             Any
+Protocol:                             TCP
+LocalPort:                            Any
+RemotePort:                           Any
+Edge traversal:                       Defer to user
+Program:                              C:\users\example\appdata\roaming\example-runtime\python\python.exe
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Allow
+
+Rule Name:                            LM Studio API 1234
+----------------------------------------------------------------------
+Enabled:                              Yes
+Direction:                            In
+Profiles:                             Domain,Private,Public
+Grouping:                             
+LocalIP:                              Any
+RemoteIP:                             Any
+Protocol:                             TCP
+LocalPort:                            1234
+RemotePort:                           Any
+Edge traversal:                       No
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Allow
+
+Rule Name:                            OpenSSH Server (sshd)
+----------------------------------------------------------------------
+Enabled:                              Yes
+Direction:                            In
+Profiles:                             Domain,Private,Public
+Grouping:                             
+LocalIP:                              Any
+RemoteIP:                             Any
+Protocol:                             TCP
+LocalPort:                            22
+RemotePort:                           Any
+Edge traversal:                       No
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Allow
+
+Rule Name:                            Unity 6000.0.32f1 Editor
+----------------------------------------------------------------------
+Enabled:                              Yes
+Direction:                            In
+Profiles:                             Domain
+Grouping:                             
+LocalIP:                              Any
+RemoteIP:                             Any
+Protocol:                             Any
+Edge traversal:                       No
+Program:                              C:\Program Files\Unity\Hub\Editor\6000.0.32f1\Editor\Unity.exe
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Allow
+
+Rule Name:                            Unity 6000.0.32f1 Editor
+----------------------------------------------------------------------
+Enabled:                              Yes
+Direction:                            In
+Profiles:                             Public
+Grouping:                             
+LocalIP:                              Any
+RemoteIP:                             Any
+Protocol:                             Any
+Edge traversal:                       No
+Program:                              C:\Program Files\Unity\Hub\Editor\6000.0.32f1\Editor\Unity.exe
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Block
+
+Rule Name:                            Microsoft Media Foundation Network Source IN [TCP 554]
+----------------------------------------------------------------------
+Description:                          InBound Rule for the Microsoft Media Foundation's Capture SVC to open TCP port to enable RTSP
+Enabled:                              Yes
+Direction:                            In
+Profiles:                             Domain,Private,Public
+Grouping:                             Microsoft Media Foundation Network Source
+LocalIP:                              Any
+RemoteIP:                             LocalSubnet
+Protocol:                             TCP
+LocalPort:                            554,8554-8558
+RemotePort:                           Any
+Edge traversal:                       No
+Program:                              C:\WINDOWS\system32\svchost.exe
+Service:                              FrameServer
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Allow
+
+Rule Name:                            Microsoft Media Foundation Network Source IN [UDP 5004-5009]
+----------------------------------------------------------------------
+Description:                          InBound Rule for the Microsoft Media Foundation's Capture SVC to open UDP port to enable RTSP
+Enabled:                              Yes
+Direction:                            In
+Profiles:                             Domain,Private,Public
+Grouping:                             Microsoft Media Foundation Network Source
+LocalIP:                              Any
+RemoteIP:                             LocalSubnet
+Protocol:                             UDP
+LocalPort:                            5000-5020
+RemotePort:                           Any
+Edge traversal:                       No
+Program:                              C:\WINDOWS\system32\svchost.exe
+Service:                              FrameServer
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Allow
+
+Rule Name:                            File and Printer Sharing (Restrictive) (Echo Request - ICMPv6-In)
+----------------------------------------------------------------------
+Description:                          Echo Request messages are sent as ping requests to other nodes.
+Enabled:                              No
+Direction:                            In
+Profiles:                             Domain,Private,Public
+Grouping:                             File and Printer Sharing (Restrictive)
+LocalIP:                              Any
+RemoteIP:                             Any
+Protocol:                             ICMPv6
+                                      Type    Code
+                                      128     Any 
+Edge traversal:                       No
+Program:                              System
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Allow
+
+Rule Name:                            HNS Container Networking - DNS (UDP-In) - 11111111-2222-4333-8444-555555555555 - 0
+----------------------------------------------------------------------
+Description:                          HNS Container Networking - DNS (UDP-In) - 11111111-2222-4333-8444-555555555555 - 0
+Enabled:                              Yes
+Direction:                            In
+Profiles:                             Domain,Private,Public
+Grouping:                             
+LocalIP:                              Any
+RemoteIP:                             Any
+Protocol:                             UDP
+LocalPort:                            53
+RemotePort:                           Any
+Edge traversal:                       No
+InterfaceTypes:                       Any
+Security:                             NotRequired
+Rule source:                          Local Setting
+Action:                               Allow
+Ok.
+

@@ -1,0 +1,9 @@
+# Keep source and scripts LF on Windows and Unix; detect binaries automatically.
+* text=auto eol=lf
+*.zip binary
+*.gz binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.pdf binary
+*.exe binary

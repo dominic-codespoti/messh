@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify and build release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      release-tag: ${{ github.ref_name }}
+
+  publish:
+    name: Publish GitHub release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-assets
+          path: dist
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+      - name: Verify tag commit and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          object=$(gh api "repos/${GH_REPO}/git/ref/tags/${RELEASE_TAG}")
+          type=$(jq -r '.object.type' <<< "$object")
+          sha=$(jq -r '.object.sha' <<< "$object")
+          while [[ "$type" == tag ]]; do
+            object=$(gh api "repos/${GH_REPO}/git/tags/${sha}")
+            type=$(jq -r '.object.type' <<< "$object")
+            sha=$(jq -r '.object.sha' <<< "$object")
+          done
+          if [[ "$type" != commit || "$sha" != "$RELEASE_COMMIT" ]]; then
+            printf 'Release tag no longer points to the verified commit\n' >&2
+            exit 1
+          fi
+          flags=()
+          version=${RELEASE_TAG%%+*}
+          if [[ "$version" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes --title "$RELEASE_TAG" "${flags[@]}"

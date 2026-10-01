@@ -1,0 +1,12 @@
+title = "messh secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic credential used to test service credential redaction"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^internal/catalog/fakes_test\.go$''']
+regexTarget = "secret"
+regexes = ['''^sk-test-SECRET-1234567890$''']

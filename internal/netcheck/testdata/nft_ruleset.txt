@@ -1,0 +1,24 @@
+table inet filter {
+	set lan_tcp {
+		type inet_service
+		elements = { 22, 80 }
+	}
+
+	chain input {
+		type filter hook input priority filter; policy drop;
+		ct state established,related accept
+		iif "lo" accept
+		ip saddr 192.168.1.0/24 tcp dport 7519 accept
+		meta l4proto { tcp, udp } th dport { 5353, 7000-7600 } accept
+		ip6 nexthdr icmpv6 accept
+		tcp dport 9000 drop
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}

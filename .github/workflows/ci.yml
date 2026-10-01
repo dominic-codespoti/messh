@@ -1,0 +1,190 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: SemVer v tag to embed in release binaries; empty for development builds
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  version:
+    name: Validate build version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Validate release tag or use development version
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          tag = os.environ.get("RELEASE_TAG", "")
+          version = "0.1.0-dev"
+          if tag:
+              if os.environ["GITHUB_REF"] != "refs/tags/" + tag:
+                  raise SystemExit("Release tag must match the workflow's tag ref")
+              pattern = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+              match = re.fullmatch(pattern, tag)
+              if not match:
+                  raise SystemExit("Release tag must be v followed by valid SemVer")
+              for identifier in (match.group(4) or "").split("."):
+                  if identifier.isdigit() and len(identifier) > 1 and identifier.startswith("0"):
+                      raise SystemExit("Numeric prerelease identifiers cannot have leading zeros")
+              version = tag[1:]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+          PY
+
+  checks:
+    name: Workflow and secret checks
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Validate GitHub workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+      - name: Scan Git history for secrets
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --redact --no-banner --log-opts="--all"
+
+  go:
+    name: Go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Check Go formatting
+        run: |
+          mapfile -d '' files < <(git ls-files -z '*.go')
+          unformatted=$(gofmt -l "${files[@]}")
+          if [[ -n "$unformatted" ]]; then
+            printf 'Run gofmt on:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Vet Go packages
+        run: go vet ./...
+      - name: Test Go packages
+        run: go test -count=1 -timeout 5m ./...
+
+  pi:
+    name: Pi extension (Node 24)
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: integrations/pi
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: integrations/pi/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Check TypeScript
+        run: npm run check
+      - name: Test pi extension
+        run: npm test
+
+  artifacts:
+    name: Build release archives
+    needs: [version, checks, go, pi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Build and package three supported targets
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          CGO_ENABLED: '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          mkdir -p dist .release
+          for target in windows-amd64 linux-amd64 linux-arm64; do
+            export GOOS=${target%-*}
+            export GOARCH=${target#*-}
+            package="messh-${VERSION}-${target}"
+            stage=".release/${package}"
+            mkdir -p "$stage"
+            executable=messh
+            if [[ "$GOOS" == windows ]]; then executable=messh.exe; fi
+            go build -trimpath -ldflags="-s -w -X messh/internal/node.Version=${VERSION}" -o "$stage/$executable" ./cmd/messh
+            cp README.md LICENSE "$stage/"
+            git archive HEAD integrations/pi | tar -x -C "$stage"
+            find "$stage" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+            if [[ "$GOOS" == windows ]]; then
+              (cd .release && zip -X -q -r "../dist/${package}.zip" "$package")
+            else
+              tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -czf "dist/${package}.tar.gz" -C .release "$package"
+            fi
+          done
+          (cd dist && sha256sum *.zip *.tar.gz | LC_ALL=C sort -k2 > SHA256SUMS)
+      - name: Upload release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14

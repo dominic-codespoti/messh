@@ -1,0 +1,139 @@
+{
+    "CimClass":  {
+                     "CimSuperClassName":  "MSFT_NetSettingData",
+                     "CimSuperClass":  {
+                                           "CimSuperClassName":  "CIM_SettingData",
+                                           "CimSuperClass":  "ROOT/StandardCimv2:CIM_SettingData",
+                                           "CimClassProperties":  "Caption Description ElementName InstanceID",
+                                           "CimClassQualifiers":  "UMLPackagePath = \"CIM::Core::Settings\" locale = 1033",
+                                           "CimClassMethods":  "",
+                                           "CimSystemProperties":  "Microsoft.Management.Infrastructure.CimSystemProperties"
+                                       },
+                     "CimClassProperties":  [
+                                                "Caption",
+                                                "Description",
+                                                "ElementName",
+                                                "InstanceID",
+                                                "DomainAuthenticationKind",
+                                                "InterfaceAlias",
+                                                "InterfaceIndex",
+                                                "IPv4Connectivity",
+                                                "IPv6Connectivity",
+                                                "Name",
+                                                "NetworkCategory"
+                                            ],
+                     "CimClassQualifiers":  [
+                                                "UMLPackagePath = \"CIM::Core::Settings\"",
+                                                "ClassVersion = \"2.0.0\"",
+                                                "dynamic = True",
+                                                "locale = 1033",
+                                                "provider = \"NlmCim\""
+                                            ],
+                     "CimClassMethods":  [
+
+                                         ],
+                     "CimSystemProperties":  {
+                                                 "Namespace":  "root/StandardCimv2",
+                                                 "ServerName":  "DESKTOP-EXAMPLE",
+                                                 "ClassName":  "MSFT_NetConnectionProfile",
+                                                 "Path":  null
+                                             }
+                 },
+    "CimInstanceProperties":  [
+                                  {
+                                      "Name":  "Caption",
+                                      "Value":  null,
+                                      "CimType":  14,
+                                      "Flags":  "Property, NotModified, NullValue",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "Description",
+                                      "Value":  null,
+                                      "CimType":  14,
+                                      "Flags":  "Property, NotModified, NullValue",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "ElementName",
+                                      "Value":  "",
+                                      "CimType":  14,
+                                      "Flags":  "Property, Required, NotModified",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "InstanceID",
+                                      "Value":  "{AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE}",
+                                      "CimType":  14,
+                                      "Flags":  "Property, Key, NotModified",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "DomainAuthenticationKind",
+                                      "Value":  0,
+                                      "CimType":  6,
+                                      "Flags":  "Property, NotModified",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "InterfaceAlias",
+                                      "Value":  "WiFi 2",
+                                      "CimType":  14,
+                                      "Flags":  "Property, ReadOnly, NotModified",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "InterfaceIndex",
+                                      "Value":  10,
+                                      "CimType":  6,
+                                      "Flags":  "Property, ReadOnly, NotModified",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "IPv4Connectivity",
+                                      "Value":  4,
+                                      "CimType":  6,
+                                      "Flags":  "Property, ReadOnly, NotModified",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "IPv6Connectivity",
+                                      "Value":  1,
+                                      "CimType":  6,
+                                      "Flags":  "Property, ReadOnly, NotModified",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "Name",
+                                      "Value":  "ExampleLAN",
+                                      "CimType":  14,
+                                      "Flags":  "Property, ReadOnly, NotModified",
+                                      "IsValueModified":  false
+                                  },
+                                  {
+                                      "Name":  "NetworkCategory",
+                                      "Value":  0,
+                                      "CimType":  6,
+                                      "Flags":  "Property, NotModified",
+                                      "IsValueModified":  false
+                                  }
+                              ],
+    "CimSystemProperties":  {
+                                "Namespace":  "root/StandardCimv2",
+                                "ServerName":  "DESKTOP-EXAMPLE",
+                                "ClassName":  "MSFT_NetConnectionProfile",
+                                "Path":  null
+                            },
+    "NetworkCategory":  0,
+    "DomainAuthenticationKind":  0,
+    "IPv4Connectivity":  4,
+    "IPv6Connectivity":  1,
+    "Caption":  null,
+    "Description":  null,
+    "ElementName":  "",
+    "InstanceID":  "{AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE}",
+    "InterfaceAlias":  "WiFi 2",
+    "InterfaceIndex":  10,
+    "Name":  "ExampleLAN",
+    "PSComputerName":  null
+}

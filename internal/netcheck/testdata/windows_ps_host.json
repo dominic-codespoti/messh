@@ -1,0 +1,155 @@
+{
+ "profiles": [
+  {
+   "alias": "WiFi 2",
+   "index": 10,
+   "name": "ExampleLAN",
+   "category": "Public"
+  }
+ ],
+ "rulesRead": true,
+ "current": 4,
+ "firewall": [
+  {
+   "type": 1,
+   "enabled": true,
+   "blockAllInbound": false,
+   "defaultInboundAction": 0
+  },
+  {
+   "type": 2,
+   "enabled": true,
+   "blockAllInbound": false,
+   "defaultInboundAction": 0
+  },
+  {
+   "type": 4,
+   "enabled": true,
+   "blockAllInbound": false,
+   "defaultInboundAction": 0
+  }
+ ],
+ "rules": [
+  {
+   "name": "Unity 6000.0.32f1 Editor",
+   "app": "C:\\Program Files\\Unity\\Hub\\Editor\\6000.0.32f1\\Editor\\Unity.exe",
+   "service": null,
+   "protocol": 256,
+   "localPorts": null,
+   "remoteAddresses": "*",
+   "profiles": 4,
+   "action": 0,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "python.exe",
+   "app": "C:\\users\\example\\appdata\\roaming\\example-runtime\\python\\python.exe",
+   "service": null,
+   "protocol": 17,
+   "localPorts": "*",
+   "remoteAddresses": "*",
+   "profiles": 4,
+   "action": 1,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "python.exe",
+   "app": "C:\\users\\example\\appdata\\roaming\\example-runtime\\python\\python.exe",
+   "service": null,
+   "protocol": 6,
+   "localPorts": "*",
+   "remoteAddresses": "*",
+   "profiles": 4,
+   "action": 1,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "Microsoft Edge (mDNS-In)",
+   "app": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\1.0.0.0\\msedgewebview2.exe",
+   "service": null,
+   "protocol": 17,
+   "localPorts": "5353",
+   "remoteAddresses": "*",
+   "profiles": 2147483647,
+   "action": 1,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "Microsoft Media Foundation Network Source IN [TCP 554]",
+   "app": "C:\\WINDOWS\\system32\\svchost.exe",
+   "service": "FrameServer",
+   "protocol": 6,
+   "localPorts": "554,8554-8558",
+   "remoteAddresses": "LocalSubnet",
+   "profiles": 2147483647,
+   "action": 1,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "Microsoft Media Foundation Network Source IN [UDP 5004-5009]",
+   "app": "C:\\WINDOWS\\system32\\svchost.exe",
+   "service": "FrameServer",
+   "protocol": 17,
+   "localPorts": "5000-5020",
+   "remoteAddresses": "LocalSubnet",
+   "profiles": 2147483647,
+   "action": 1,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "LM Studio API 1234",
+   "app": null,
+   "service": null,
+   "protocol": 6,
+   "localPorts": "1234",
+   "remoteAddresses": "*",
+   "profiles": 2147483647,
+   "action": 1,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "OpenSSH Server (sshd)",
+   "app": null,
+   "service": null,
+   "protocol": 6,
+   "localPorts": "22",
+   "remoteAddresses": "*",
+   "profiles": 2147483647,
+   "action": 1,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "HNS Container Networking - ICS DNS (TCP-In) - 11111111-2222-4333-8444-555555555555 - 0",
+   "app": "C:\\WINDOWS\\system32\\svchost.exe",
+   "service": "sharedaccess",
+   "protocol": 6,
+   "localPorts": "53",
+   "remoteAddresses": "*",
+   "profiles": 2147483647,
+   "action": 1,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "Microsoft Edge (mDNS-In)",
+   "app": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+   "service": null,
+   "protocol": 17,
+   "localPorts": "5353",
+   "remoteAddresses": "*",
+   "profiles": 2147483647,
+   "action": 1,
+   "interfaceTypes": "All"
+  },
+  {
+   "name": "Core Networking - Router Advertisement (ICMPv6-In)",
+   "app": "System",
+   "service": null,
+   "protocol": 58,
+   "localPorts": null,
+   "remoteAddresses": "fe80::/64",
+   "profiles": 2147483647,
+   "action": 1,
+   "interfaceTypes": "All"
+  }
+ ]
+}
