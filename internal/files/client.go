@@ -63,9 +63,17 @@ func (e *remoteError) Error() string { return e.msg }
 func (e *remoteError) Unwrap() error { return e.sentinel }
 
 func decodeError(resp *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	var body []byte
 	var eb errBody
-	_ = json.Unmarshal(body, &eb)
+	contentType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
+	if strings.EqualFold(strings.TrimSpace(contentType), "application/json") {
+		// Decode the error without waiting for response EOF. A rejected upload
+		// must close its response so the server can stop draining its request.
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&eb)
+	} else {
+		body, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		_ = json.Unmarshal(body, &eb)
+	}
 	e := &remoteError{msg: eb.Error}
 	if e.msg == "" {
 		e.msg = fmt.Sprintf("the other device answered %s", resp.Status)
@@ -86,15 +94,22 @@ func (c *Client) getJSON(ctx context.Context, u string, v any) error {
 	if err != nil {
 		return err
 	}
-	return c.doJSON(req, v)
+	return c.doJSON(req, v, nil)
 }
 
-func (c *Client) doJSON(req *http.Request, v any) error {
+func (c *Client) doJSON(req *http.Request, v any, cancelUpload context.CancelCauseFunc) error {
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// HTTP/2 response Close waits for the request writer. Cancel an upload
+		// first so a blocked source cannot delay returning its rejection.
+		if cancelUpload != nil {
+			cancelUpload(nil)
+		}
+		resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return decodeError(resp)
 	}
@@ -141,7 +156,7 @@ func (c *Client) Mkdir(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
-	return c.doJSON(req, nil)
+	return c.doJSON(req, nil, nil)
 }
 
 // Put uploads src. The SHA-256 travels as a trailer, so the sender never
@@ -173,7 +188,7 @@ func (c *Client) Put(ctx context.Context, ref string, opt WriteOptions, src Sour
 		req.Header.Set(HeaderMtime, strconv.FormatInt(opt.ModTime.UnixNano(), 10))
 	}
 	var info Info
-	err = c.doJSON(req, &info)
+	err = c.doJSON(req, &info, cancel)
 	switch {
 	case err == nil:
 		return info, nil

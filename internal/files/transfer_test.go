@@ -320,6 +320,40 @@ func (b *blockingSource) Read(p []byte) (int, error) {
 }
 func (b *blockingSource) SHA256() string { return "" }
 
+func TestHTTP2RejectedUploadDoesNotWaitForSourceEOF(t *testing.T) {
+	store, root := newTestStore(t)
+	mux := http.NewServeMux()
+	mux.Handle(Path, NewHandler(store))
+	mux.Handle(Path+"/", NewHandler(store))
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	client := &Client{HTTP: server.Client(), Base: server.URL, IdleTimeout: 5 * time.Second}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	sourceCtx, releaseSource := context.WithCancel(t.Context())
+	defer releaseSource()
+
+	// The error response must stop the stream even though its source never
+	// reaches EOF. Waiting for response EOF would deadlock with the server's
+	// request drain until the idle timeout masks ErrReadOnly.
+	_, err := client.Put(ctx, "artifacts/svc/blocked.bin", WriteOptions{Size: 1 << 20}, &blockingSource{ctx: sourceCtx})
+	releaseSource()
+	if !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("rejected blocked upload = %v, want ErrReadOnly", err)
+	}
+
+	// An upload following the rejection must still preserve its contents.
+	data := []byte("after rejection")
+	if _, err := client.Put(ctx, "ws/job/next.txt", WriteOptions{Size: int64(len(data))}, newBytesSource(data)); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileText(t, root, "ws/job/next.txt"); got != string(data) {
+		t.Fatalf("next upload contents = %q, want %q", got, data)
+	}
+}
+
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(10 * time.Millisecond) {

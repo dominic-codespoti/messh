@@ -702,6 +702,10 @@ connection, never through MCP payloads:
 Peers cannot write into `artifacts/`. Symlinks, junctions and special files
 inside the two directories are never followed or served.
 
+HTTP/2 upload rejections return their file error without waiting for the source
+to finish streaming. The rejection path keeps late digest trailers from closing
+the connection used by subsequent transfers.
+
 ## Scheduling
 
 An agent can have a tool call run later or on a timetable, e.g. on the always-on

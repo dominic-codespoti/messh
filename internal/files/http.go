@@ -66,7 +66,7 @@ func NewHandler(s *Store) http.Handler { return &handler{s} }
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == Path {
 		if r.Method != http.MethodGet {
-			writeErr(w, http.StatusMethodNotAllowed, "", errors.New("method not allowed"))
+			writeErr(w, r, http.StatusMethodNotAllowed, "", errors.New("method not allowed"))
 			return
 		}
 		h.list(w, r)
@@ -74,12 +74,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, ok := strings.CutPrefix(r.URL.Path, Path+"/")
 	if !ok {
-		writeErr(w, http.StatusNotFound, "", errors.New("not found"))
+		writeErr(w, r, http.StatusNotFound, "", errors.New("not found"))
 		return
 	}
 	// Only canonical refs are served so there is exactly one name per file.
 	if ref, err := ParseRef(raw); err != nil || string(ref) != raw {
-		writeErr(w, http.StatusBadRequest, "invalid", fmt.Errorf("%w: %q is not a canonical file reference", ErrInvalid, raw))
+		writeErr(w, r, http.StatusBadRequest, "invalid", fmt.Errorf("%w: %q is not a canonical file reference", ErrInvalid, raw))
 		return
 	}
 	switch r.Method {
@@ -89,12 +89,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.upload(w, r, raw)
 	case http.MethodPost:
 		if err := h.s.Mkdir(raw); err != nil {
-			writeFail(w, err)
+			writeFail(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"ref": raw})
 	default:
-		writeErr(w, http.StatusMethodNotAllowed, "", errors.New("method not allowed"))
+		writeErr(w, r, http.StatusMethodNotAllowed, "", errors.New("method not allowed"))
 	}
 }
 
@@ -114,7 +114,7 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 		l, err = h.s.List(ref)
 	}
 	if err != nil {
-		writeFail(w, err)
+		writeFail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, l)
@@ -123,7 +123,7 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request) {
 func (h *handler) download(w http.ResponseWriter, r *http.Request, ref string) {
 	f, info, err := h.s.OpenFile(ref)
 	if err != nil {
-		writeFail(w, err)
+		writeFail(w, r, err)
 		return
 	}
 	defer f.Close()
@@ -158,7 +158,7 @@ func (h *handler) download(w http.ResponseWriter, r *http.Request, ref string) {
 func (h *handler) upload(w http.ResponseWriter, r *http.Request, ref string) {
 	size, err := strconv.ParseInt(r.Header.Get(HeaderSize), 10, 64)
 	if err != nil || size < 0 {
-		writeFail(w, fmt.Errorf("%w: %s header is required", ErrInvalid, HeaderSize))
+		writeFail(w, r, fmt.Errorf("%w: %s header is required", ErrInvalid, HeaderSize))
 		return
 	}
 	opt := WriteOptions{
@@ -171,12 +171,12 @@ func (h *handler) upload(w http.ResponseWriter, r *http.Request, ref string) {
 	}
 	u, err := h.s.BeginWrite(ref, opt)
 	if err != nil {
-		writeFail(w, err)
+		writeFail(w, r, err)
 		return
 	}
 	defer u.Abort()
 	if _, err := io.CopyBuffer(u, r.Body, make([]byte, copyBufSize)); err != nil {
-		writeFail(w, err)
+		writeFail(w, r, err)
 		return
 	}
 	// A trailer is only populated once the body has been read to EOF.
@@ -185,29 +185,39 @@ func (h *handler) upload(w http.ResponseWriter, r *http.Request, ref string) {
 		expect = r.Trailer.Get(HeaderSHA256)
 	}
 	if expect == "" {
-		writeFail(w, fmt.Errorf("%w: the sender must announce the SHA-256 of the file", ErrInvalid))
+		writeFail(w, r, fmt.Errorf("%w: the sender must announce the SHA-256 of the file", ErrInvalid))
 		return
 	}
 	info, err := u.Commit(expect)
 	if err != nil {
-		writeFail(w, err)
+		writeFail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
 }
 
-func writeFail(w http.ResponseWriter, err error) {
+func writeFail(w http.ResponseWriter, r *http.Request, err error) {
 	for _, c := range errCodes {
 		if errors.Is(err, c.err) {
-			writeErr(w, c.status, c.code, err)
+			writeErr(w, r, c.status, c.code, err)
 			return
 		}
 	}
-	writeErr(w, http.StatusInternalServerError, "", err)
+	writeErr(w, r, http.StatusInternalServerError, "", err)
 }
 
-func writeErr(w http.ResponseWriter, status int, code string, err error) {
+func writeErr(w http.ResponseWriter, r *http.Request, status int, code string, err error) {
 	writeJSON(w, status, errBody{Error: err.Error(), Code: code})
+	if r.ProtoMajor != 2 || r.Method != http.MethodPut {
+		return
+	}
+	// Keep the stream alive until queued request trailers arrive or the client
+	// cancels it. Otherwise Go's HTTP/2 server can treat late trailer HEADERS as
+	// an out-of-order new stream and shut down the entire connection.
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, r.Body)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
