@@ -953,6 +953,11 @@ runs on pushes and pull requests:
 - Pure-Go archives for `windows-amd64`, `linux-amd64`, and `linux-arm64`, plus
   SHA-256 checksums, available as artifacts on a successful workflow run.
 
+All verification jobs must pass before archives are built. Tagged release
+publication verifies the archive checksums and that the tag still points to the
+tested commit. Official Actions are pinned to commit SHAs; only the release
+publication job has repository write permission.
+
 Ordinary source builds report version `0.1.0-dev`. Release builds set the
 version from a later `v*` SemVer tag (without its leading `v`) with the linker
 variable `-X messh/internal/node.Version=<version>`. Publishing such a tag runs

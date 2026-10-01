@@ -180,7 +180,7 @@ jobs:
               tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -czf "dist/${package}.tar.gz" -C .release "$package"
             fi
           done
-          (cd dist && sha256sum *.zip *.tar.gz | LC_ALL=C sort -k2 > SHA256SUMS)
+          (cd dist && sha256sum -- *.zip *.tar.gz | LC_ALL=C sort -k2 > SHA256SUMS)
       - name: Upload release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
