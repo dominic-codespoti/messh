@@ -1,15 +1,16 @@
 # messh for pi
 
 This extension connects
-[pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent)
-(`@mariozechner/pi-coding-agent`) to the messh node on the same device.
+[pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
+(`@earendil-works/pi-coding-agent`) to the messh node on the same device.
 It registers messh's MCP tools as native pi tools, so an agent can discover
 paired devices, inspect them, and use their jobs, local services, models,
 browsers, and files. pi does not need a separate MCP client.
 
 The extension imports only pi types and Node built-ins; it adds no runtime npm
 dependencies or build step. You still need pi, its supported Node.js runtime
-(the extension declares Node.js 20.6+), and a working `messh` executable.
+(the extension declares Node.js 20.6+; current pi requires Node.js 22.19+),
+and a working `messh` executable.
 **Node.js 24 is required for the development commands below**, including direct
 execution of `.ts` tests; it is not required just to start a messh node.
 
@@ -141,38 +142,15 @@ pi loads extensions at startup: after editing `messh.json` use `/messh` (rereads
 
 ## Implementation and compatibility
 
-The extension is type-checked against `@mariozechner/pi-coding-agent` **0.73.1**
-and its dependencies `@mariozechner/pi-ai` / `@mariozechner/pi-agent-core` 0.73.1
-and `typebox` 1.x. It relies on the following public extension/package contracts
-and MCP transport behavior; future upstream API changes may require an update.
+The extension is type-checked against the maintained
+`@earendil-works/pi-coding-agent` **0.99.2** and `typebox` 1.x. It uses pi's
+public `ExtensionAPI` to register tools, commands, and session handlers.
+Only type imports reference pi; the host supplies the extension runtime.
+Future upstream API changes may require an update.
 
-- An extension is a TypeScript module loaded by jiti (no build step) whose default export is
-  `(pi: ExtensionAPI) => void | Promise<void>`; an async factory is awaited before `session_start`.
-- Discovery: `~/.pi/agent/extensions/*.ts`, `~/.pi/agent/extensions/*/index.ts`, a subdirectory with
-  a `package.json` `"pi": { "extensions": [...] }` manifest, the same under `.pi/extensions/` per
-  project, `"extensions"`/`"packages"` in `settings.json`, `pi install <npm:|git:|local path>` (local
-  paths are recorded, not copied; relative paths resolve against the current directory), and
-  `pi -e <path>` for one run.
-- Dependencies: runtime deps go in `dependencies` (installed by `pi install` for npm/git sources);
-  pi's own packages (`@mariozechner/pi-*`, `typebox`) belong in `peerDependencies` with `"*"`. pi
-  aliases those imports to its bundled copies.
-- `pi.registerTool({ name, label, description, parameters, execute, ... })`. `parameters` is typed as
-  TypeBox `TSchema`, which in typebox 1.x is an empty interface; pi-ai's `validateToolArguments`
-  explicitly accepts plain JSON Schema objects (compiled with `typebox/compile`, with extra
-  coercion for non-TypeBox schemas), so the MCP schema is passed as-is after inlining local `$ref`s
-  (the Anthropic provider forwards only `properties` and `required`).
-- `execute(toolCallId, params, signal, onUpdate, ctx)` returns
-  `{ content: (TextContent | ImageContent)[], details }` with `{ type: "text", text }` and
-  `{ type: "image", data /* base64 */, mimeType }`. Errors are signalled by throwing; a returned value
-  never sets `isError`.
-- `registerTool` works during load and at runtime; re-registering a name replaces it; newly
-  registered tools are activated; there is no unregister, only `pi.setActiveTools(names)`.
-  `getActiveTools`/`setActiveTools`/`getAllTools` throw while the extension is still loading.
-- Built-in tool names: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`.
-- `pi.on("session_start", (event, ctx) => ...)`; `ctx.hasUI` is false in print/JSON mode;
-  `ctx.ui.notify(message, "info" | "warning" | "error")`. `pi.registerCommand(name, { description,
-  handler(args, ctx) })` adds `/name`.
-- pi asks tools to keep output within 50 KB / 2000 lines (`DEFAULT_MAX_BYTES`, `DEFAULT_MAX_LINES`).
+An offline RPC smoke run under pi 0.99.2 loaded the extension and executed
+`/messh` against a real loopback messh node, discovering its ten mesh tools.
+Interactive model sessions and native approval dialogs were not exercised.
 
 messh side (Go MCP SDK v1.8.0, `mcp/streamable.go`): the agent endpoint is a stateless streamable
 HTTP server answering JSON. For requests without `initialize` and a protocol version older than
@@ -191,9 +169,21 @@ Use Node.js 24 and npm. From the repository root:
 ```sh
 cd integrations/pi
 npm ci               # install dev dependencies from the committed lockfile
-npm run check        # tsc --noEmit against pi 0.73.1's real types
+npm run check        # tsc --noEmit against maintained pi 0.99.2 types
 npm test             # Node 24 runs lib.test.ts directly
+npm audit --audit-level=high
 ```
+
+The `brace-expansion` override and committed lockfile pin the development
+dependency to patched version 5.0.12. The pi lock entry deliberately omits
+`hasShrinkwrap`: otherwise npm reinstates upstream's 5.0.9 pin during `npm ci`,
+even when the root lockfile and override specify 5.0.12.
+
+When regenerating the lockfile, retain the patched resolution and this metadata
+change until upstream ships a patched shrinkwrap. After a clean install,
+`npm ls brace-expansion --all` must report 5.0.12; `npm audit` alone checks lockfile
+metadata and does not prove which version was installed. CI audits the whole
+development dependency tree; these packages are not extension runtime dependencies.
 
 `lib.ts` holds everything testable without pi (config, token parsing, the MCP client, schema and
 result mapping); `index.ts` is the pi glue.

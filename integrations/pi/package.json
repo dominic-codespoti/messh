@@ -19,18 +19,21 @@
 		"test": "node --test lib.test.ts"
 	},
 	"peerDependencies": {
-		"@mariozechner/pi-coding-agent": "*",
+		"@earendil-works/pi-coding-agent": "*",
 		"typebox": "*"
 	},
 	"peerDependenciesMeta": {
-		"@mariozechner/pi-coding-agent": { "optional": true },
+		"@earendil-works/pi-coding-agent": { "optional": true },
 		"typebox": { "optional": true }
 	},
 	"devDependencies": {
-		"@mariozechner/pi-coding-agent": "0.73.1",
+		"@earendil-works/pi-coding-agent": "0.99.2",
 		"@types/node": "^24.3.0",
 		"typebox": "^1.1.24",
 		"typescript": "~5.9.3"
+	},
+	"overrides": {
+		"brace-expansion": "5.0.12"
 	},
 	"engines": {
 		"node": ">=20.6.0"

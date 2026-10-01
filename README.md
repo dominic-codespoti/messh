@@ -948,7 +948,7 @@ The [CI workflow](https://github.com/dominic-codespoti/messh/actions/workflows/c
 runs on pushes and pull requests:
 
 - Native Go tests and vet on Ubuntu and Windows, using the Go version in `go.mod`.
-- pi extension type checking and tests on Node.js 24 with `npm ci`.
+- pi extension type checking, tests, and a high-severity dependency audit on Node.js 24 with `npm ci`.
 - Workflow validation with actionlint and full Git history secret scanning with Gitleaks.
 - Pure-Go archives for `windows-amd64`, `linux-amd64`, and `linux-arm64`, plus
   SHA-256 checksums, available as artifacts on a successful workflow run.

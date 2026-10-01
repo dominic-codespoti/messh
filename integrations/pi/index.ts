@@ -3,7 +3,7 @@
 // Only type imports from pi, so it loads in pi and in harnesses that load pi
 // extensions (omp) without installing anything.
 
-import type { ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";

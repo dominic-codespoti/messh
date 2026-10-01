@@ -132,6 +132,8 @@ jobs:
           cache-dependency-path: integrations/pi/package-lock.json
       - name: Install locked dependencies
         run: npm ci
+      - name: Audit development dependencies
+        run: npm audit --audit-level=high
       - name: Check TypeScript
         run: npm run check
       - name: Test pi extension
