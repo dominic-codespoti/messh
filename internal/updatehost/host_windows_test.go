@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -168,7 +169,13 @@ $rules = @($stored.GetAccessRules($true, $true, [System.Security.Principal.Secur
 @{protected=$stored.AreAccessRulesProtected;owner=$stored.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;sid=$sid.Value;rules=@($rules | ForEach-Object { @{sid=$_.IdentityReference.Value;rights=[int]$_.FileSystemRights;allow=($_.AccessControlType -eq 'Allow')} })} | ConvertTo-Json -Depth 4 -Compress
 `
 	env := []string{"MESSH_UPDATE_INTENT_PATH=" + path, "MESSH_UPDATE_INTENT=" + payload}
-	data, err := command(ctx, powershell, env, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
+	runPowerShell := func(env []string) ([]byte, error) {
+		args := []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script}
+		cmd := exec.CommandContext(ctx, powershell, args...)
+		cmd.Env = append(os.Environ(), env...)
+		return cmd.CombinedOutput()
+	}
+	data, err := runPowerShell(env)
 	if err != nil {
 		t.Fatalf("create recovery intent: %v; PowerShell output: %s", err, strings.TrimSpace(string(data)))
 	}
@@ -187,8 +194,12 @@ $rules = @($stored.GetAccessRules($true, $true, [System.Security.Principal.Secur
 	if !acl.Protected || acl.Owner != acl.SID || len(acl.Rules) != 1 || acl.Rules[0].SID != acl.SID || !acl.Rules[0].Allow || acl.Rules[0].Rights != 0x1f01ff {
 		t.Fatalf("recovery intent is not owner-only: %+v", acl)
 	}
-	if _, err := command(ctx, powershell, []string{"MESSH_UPDATE_INTENT_PATH=" + path, "MESSH_UPDATE_INTENT=replacement"}, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script); err == nil {
+	_, err = runPowerShell([]string{"MESSH_UPDATE_INTENT_PATH=" + path, "MESSH_UPDATE_INTENT=replacement"})
+	if err == nil {
 		t.Fatal("overwrote an existing recovery transaction")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("second recovery-intent creation timed out before checking exclusivity: %v", ctx.Err())
 	}
 	persisted, err := os.ReadFile(path)
 	if err != nil || string(persisted) != payload {
