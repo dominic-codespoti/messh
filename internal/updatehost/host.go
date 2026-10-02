@@ -249,7 +249,11 @@ func command(ctx context.Context, executable string, env []string, args ...strin
 	var stdout, stderr boundedOutput
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.data, fmt.Errorf("%s: %w: %s", filepath.Base(executable), err, strings.TrimSpace(string(stderr.data)))
+		failure := fmt.Errorf("%s: %w: %s", filepath.Base(executable), err, strings.TrimSpace(string(stderr.data)))
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return stdout.data, errors.Join(failure, ctxErr)
+		}
+		return stdout.data, failure
 	}
 	if stdout.overflow || stderr.overflow {
 		return nil, errors.New("launcher inspection output exceeded 1 MiB")
