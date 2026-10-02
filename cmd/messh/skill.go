@@ -56,21 +56,25 @@ func init() {
 	add(&Command{
 		Name:     "skill install",
 		Summary:  "install the messh agent skill into a harness skills directory",
-		Examples: []string{"messh skill install --for omp", "messh skill install --for pi"},
-		Help: "Writes <dir>/messh/SKILL.md, creating directories as needed. The default <dir> depends on --for:\n" +
+		Examples: []string{"messh skill install --for pi", "messh skill install --dir DIR"},
+		Help: "Writes <dir>/messh/SKILL.md, creating directories as needed. Choose either --for HARNESS or --dir DIR; there is no default target.\n" +
+			"The default <dir> depends on --for:\n" +
 			"omp: ~/.omp/agent/skills (native omp user skills)\n" +
 			"pi: ~/.pi/agent/skills\n" +
 			"agents: ~/.agents/skills (plain Agent Skills layout, also read by pi)",
 		Output:  `{path, written, unchanged}`,
 		Mutates: true,
 		Flags: func(fs *flag.FlagSet) {
-			choiceFlag(fs, "for", "omp", "harness skills directory to use in `HARNESS`", "omp", "pi", "agents")
+			choiceFlag(fs, "for", "", "harness skills directory to use in `HARNESS`", "omp", "pi", "agents")
 			fs.String("dir", "", "skills directory in `DIR` (overrides --for)")
 			fs.Bool("force", false, "overwrite an existing SKILL.md with different content")
 		},
 		Run: func(c *Context) error {
 			dir := c.String("dir")
 			if dir == "" {
+				if !c.Set("for") {
+					return usageErrorf("choose a target with --for HARNESS or --dir DIR")
+				}
 				var err error
 				dir, err = skillDirFor(c.String("for"))
 				if err != nil {

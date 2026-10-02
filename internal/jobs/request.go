@@ -38,6 +38,8 @@ const (
 
 // submitArgs is the job_submit input.
 type submitArgs struct {
+	RequestID      string            `json:"request_id,omitempty"`
+	Recovery       *recoveryArgs     `json:"recovery,omitempty"`
 	Command        string            `json:"command"`
 	Args           []string          `json:"args"`
 	Cwd            string            `json:"cwd"`
@@ -51,7 +53,14 @@ type submitArgs struct {
 }
 
 // request is a validated job_submit with everything resolved on this host.
+type recoveryArgs struct {
+	Checkpoint string   `json:"checkpoint"`
+	Args       []string `json:"args"`
+}
+
 type request struct {
+	RequestID  string
+	Recovery   *recoveryArgs
 	Path       string
 	Args       []string
 	Shell      bool
@@ -81,6 +90,9 @@ func (r *request) argv() []string { return displayArgv(r.Path, r.Args, r.Shell, 
 // hashes are filled in by the caller of resolveInputs.
 func (p *Provider) parseSubmit(raw json.RawMessage) (*request, error) {
 	var a submitArgs
+	if err := ValidateSubmission(raw); err != nil {
+		return nil, fmt.Errorf("invalid job_submit arguments: %w", err)
+	}
 	if len(raw) > 0 {
 		dec := json.NewDecoder(strings.NewReader(string(raw)))
 		dec.DisallowUnknownFields()
@@ -111,7 +123,16 @@ func (p *Provider) parseSubmit(raw json.RawMessage) (*request, error) {
 		return nil, errors.New("with shell:true put the whole command line in command and leave args empty")
 	}
 
-	r := &request{Shell: a.Shell, Label: strings.TrimSpace(a.Label)}
+	r := &request{Shell: a.Shell, Label: strings.TrimSpace(a.Label), RequestID: a.RequestID}
+	if a.Recovery != nil {
+		clean := path.Clean(strings.TrimPrefix(a.Recovery.Checkpoint, "./"))
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+			return nil, errors.New("recovery.checkpoint must stay inside the workspace")
+		}
+		a.Recovery.Checkpoint = clean
+		a.Recovery.Args = append([]string(nil), a.Recovery.Args...)
+		r.Recovery = a.Recovery
+	}
 	if len(r.Label) > maxLabelLen {
 		r.Label = r.Label[:maxLabelLen]
 	}
@@ -395,21 +416,22 @@ func (p *Provider) hashInputs(r *request, workspace string) error {
 // --- canonical hashing ---
 
 type canonRequest struct {
-	V          int         `json:"v"`
-	Tool       string      `json:"tool"`
-	Path       string      `json:"path"`
-	Args       []string    `json:"args"`
-	Shell      bool        `json:"shell"`
-	Line       string      `json:"line"`
-	Workspace  string      `json:"workspace"`
-	Cwd        string      `json:"cwd"`
-	Env        [][2]string `json:"env"`
-	GPUs       []int       `json:"gpus"`
-	VRAMMB     int64       `json:"vram_mb"`
-	MemMB      int64       `json:"mem_mb"`
-	CPUs       int         `json:"cpus"`
-	TimeoutSec int         `json:"timeout_seconds"`
-	Inputs     [][2]string `json:"inputs"`
+	V          int           `json:"v"`
+	Tool       string        `json:"tool"`
+	Path       string        `json:"path"`
+	Args       []string      `json:"args"`
+	Shell      bool          `json:"shell"`
+	Line       string        `json:"line"`
+	Workspace  string        `json:"workspace"`
+	Cwd        string        `json:"cwd"`
+	Env        [][2]string   `json:"env"`
+	GPUs       []int         `json:"gpus"`
+	VRAMMB     int64         `json:"vram_mb"`
+	MemMB      int64         `json:"mem_mb"`
+	CPUs       int           `json:"cpus"`
+	TimeoutSec int           `json:"timeout_seconds"`
+	Inputs     [][2]string   `json:"inputs"`
+	Recovery   *recoveryArgs `json:"recovery,omitempty"`
 }
 
 func sortedEnv(env map[string]string) [][2]string {
@@ -432,7 +454,7 @@ func (r *request) canon() canonRequest {
 		V: 1, Tool: "job_submit", Path: r.Path, Args: nonNil(r.Args), Shell: r.Shell, Line: r.Line,
 		Workspace: r.Workspace, Cwd: r.Cwd, Env: sortedEnv(r.Env),
 		GPUs: append([]int{}, r.Claims.GPUs...), VRAMMB: r.Claims.VRAMMB, MemMB: r.Claims.MemMB, CPUs: r.Claims.CPUs,
-		TimeoutSec: r.TimeoutSec, Inputs: [][2]string{},
+		TimeoutSec: r.TimeoutSec, Inputs: [][2]string{}, Recovery: r.Recovery,
 	}
 	for _, in := range r.Inputs {
 		c.Inputs = append(c.Inputs, [2]string{in.Ref, in.SHA256})
@@ -456,14 +478,15 @@ func (r *request) exact() string { return sum256(r.canon()) }
 func (r *request) commandKey() string {
 	c := r.canon()
 	return sum256(struct {
-		Path      string      `json:"path"`
-		Args      []string    `json:"args"`
-		Shell     bool        `json:"shell"`
-		Line      string      `json:"line"`
-		Workspace string      `json:"workspace"`
-		Cwd       string      `json:"cwd"`
-		Env       [][2]string `json:"env"`
-	}{c.Path, c.Args, c.Shell, c.Line, c.Workspace, c.Cwd, c.Env})
+		Path      string        `json:"path"`
+		Args      []string      `json:"args"`
+		Shell     bool          `json:"shell"`
+		Line      string        `json:"line"`
+		Workspace string        `json:"workspace"`
+		Cwd       string        `json:"cwd"`
+		Env       [][2]string   `json:"env"`
+		Recovery  *recoveryArgs `json:"recovery,omitempty"`
+	}{c.Path, c.Args, c.Shell, c.Line, c.Workspace, c.Cwd, c.Env, r.Recovery})
 }
 
 // interpreters run whatever they are given, so approving one with any
@@ -518,6 +541,13 @@ func (r *request) approval(workspaceShown string) provider.Approval {
 	}
 	if r.Shell {
 		details = append(details, provider.Detail{Label: "Shell", Value: "the command line is interpreted by " + filepath.Base(r.Path)})
+	}
+	if r.Recovery != nil {
+		args := make([]string, len(r.Recovery.Args))
+		for i, a := range r.Recovery.Args {
+			args[i] = quoteArg(a)
+		}
+		details = append(details, provider.Detail{Label: "Resume command", Value: truncate(quoteArg(r.Path)+" "+strings.Join(args, " "), detailMaxChars)}, provider.Detail{Label: "Checkpoint", Value: r.Recovery.Checkpoint})
 	}
 	if len(r.Env) > 0 {
 		var kv []string
@@ -603,13 +633,21 @@ func humanSize(n int64) string {
 
 // jobEnv builds the child environment: the user's own plus overrides, plus
 // the job's identity and its GPU selection.
-func jobEnv(base []string, j *Job, workspaceDir string) []string {
+func jobEnv(base []string, j *Job, workspaceDir, checkpointSnapshot string) []string {
 	overrides := map[string]string{}
 	for k, v := range j.Env {
 		overrides[k] = v
 	}
 	overrides["MESSH_JOB_ID"] = j.ID
 	overrides["MESSH_WORKSPACE"] = workspaceDir
+	if j.Recovery != nil {
+		if j.Attempt > 0 && j.CheckpointSnapshot != "" {
+			overrides["MESSH_CHECKPOINT"] = checkpointSnapshot
+			overrides["MESSH_RESUMED"] = "1"
+		} else {
+			overrides["MESSH_CHECKPOINT"] = filepath.Join(workspaceDir, filepath.FromSlash(j.Recovery.Checkpoint))
+		}
+	}
 	if len(j.Claims.GPUs) > 0 {
 		g := make([]string, len(j.Claims.GPUs))
 		for i, v := range j.Claims.GPUs {
@@ -676,4 +714,24 @@ func (p *Provider) cwdDir(ws, cwd string) (string, error) {
 		return "", err
 	}
 	return files.Resolve(p.paths, ref)
+}
+
+func recoveryFromRequest(r *recoveryArgs) *Recovery {
+	if r == nil {
+		return nil
+	}
+	return &Recovery{Checkpoint: r.Checkpoint, Args: append([]string(nil), r.Args...)}
+}
+
+// ApprovalForJob reconstructs the narrow prompt for an unapproved durable job.
+func ApprovalForJob(j Job) provider.Approval {
+	r := &request{Path: j.Path, Args: j.Args, Shell: j.Shell, Line: j.Line, Workspace: j.Workspace, Cwd: j.Cwd, Env: j.Env, Claims: j.Claims, TimeoutSec: j.TimeoutSec, Inputs: j.Inputs, Recovery: nil}
+	if j.Recovery != nil {
+		r.Recovery = &recoveryArgs{Checkpoint: j.Recovery.Checkpoint, Args: j.Recovery.Args}
+	}
+	ap := r.approval(j.Workspace)
+	if j.Exact != "" {
+		ap.Exact = j.Exact
+	}
+	return ap
 }

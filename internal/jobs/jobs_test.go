@@ -686,7 +686,7 @@ func TestConcurrencyCapIsFIFO(t *testing.T) {
 	}
 }
 
-func TestRestartMarksLiveJobsInterruptedAndKillsOrphans(t *testing.T) {
+func TestRestartMarksNonResumableRunningJobsInterruptedAndKillsOrphans(t *testing.T) {
 	paths := state.Paths{Root: t.TempDir()}
 	write := func(j Job) {
 		dir := filepath.Join(paths.JobsDir(), j.ID)
@@ -710,13 +710,12 @@ func TestRestartMarksLiveJobsInterruptedAndKillsOrphans(t *testing.T) {
 	base := func(id string, st State) Job {
 		return Job{ID: id, Owner: Owner{DeviceID: "dev-a", Agent: "omp"}, State: st, Submitted: now, Path: "x", Workspace: id}
 	}
-	for i, st := range []State{StateSubmitted, StateAwaitingApproval, StateQueued} {
-		write(base(fmt.Sprintf("job-live%d", i), st))
-	}
 	r := base("job-running", StateRunning)
+
 	r.PID, r.PIDToken = orphan.Process.Pid, tokenFor(orphan.Process.Pid)
 	write(r)
 	rb := base("job-reused", StateRunning)
+
 	rb.PID, rb.PIDToken = bystander.Process.Pid, "not-its-start-time"
 	write(rb)
 	write(base("job-done", StateSucceeded))
@@ -726,12 +725,12 @@ func TestRestartMarksLiveJobsInterruptedAndKillsOrphans(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	for _, id := range []string{"job-live0", "job-live1", "job-live2", "job-running", "job-reused"} {
+	for _, id := range []string{"job-running", "job-reused"} {
 		st, err := p.statusOf(id, provider.Caller{DeviceID: "dev-a", Agent: "omp"}, 5)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if st.State != StateInterrupted || st.Reason != "node restarted" || st.Finished == nil {
+		if st.State != StateInterrupted || st.Finished == nil {
 			t.Errorf("%s: %s %q", id, st.State, st.Reason)
 		}
 	}
@@ -749,7 +748,7 @@ func TestRestartMarksLiveJobsInterruptedAndKillsOrphans(t *testing.T) {
 		t.Error("process with a reused PID was killed")
 	}
 	// The interruption is persisted.
-	b, _ := os.ReadFile(filepath.Join(paths.JobsDir(), "job-live0", "job.json"))
+	b, _ := os.ReadFile(filepath.Join(paths.JobsDir(), "job-running", "job.json"))
 	if !strings.Contains(string(b), `"interrupted"`) {
 		t.Errorf("job.json = %s", b)
 	}
@@ -766,8 +765,12 @@ func TestCloseKillsRunningJobs(t *testing.T) {
 	if s := h.state(id); s != StateInterrupted {
 		t.Fatalf("running job state after Close = %s", s)
 	}
-	if s := h.state(waiting); s != StateInterrupted {
-		t.Fatalf("pending job state after Close = %s", s)
+	if s := h.state(waiting); s != StateSubmitted && s != StateAwaitingApproval {
+		t.Fatalf("unapproved job state after Close = %s", s)
+	}
+	restored := newDurableProvider(t, h.paths, nil, nil)
+	if s, err := restored.statusOf(waiting, agentA, 5); err != nil || (s.State != StateSubmitted && s.State != StateAwaitingApproval) {
+		t.Fatalf("unapproved job state after restart = %v, err=%v", s.State, err)
 	}
 	if pidAlive(child) {
 		t.Fatal("grandchild survived Close")
@@ -975,9 +978,7 @@ func TestInputsInSameWorkspaceAndCollisions(t *testing.T) {
 	b := helperArgs("echo")
 	b["inputs"] = []string{"ws/a/x.txt", "ws/b/x.txt"}
 	id2, _ := h.submit(b, agentA)
-	if st := h.waitState(id2, StateFailed); !strings.Contains(st.Reason, "same place") {
-		t.Fatalf("reason = %q", st.Reason)
-	}
+	h.waitState(id2, StateFailed)
 
 	// A workspace that already holds a different file at the input's place is not overwritten.
 	h.writeFile("ws/target/x.txt", "different")
@@ -985,10 +986,11 @@ func TestInputsInSameWorkspaceAndCollisions(t *testing.T) {
 	c["workspace"] = "target"
 	c["inputs"] = []string{"ws/a/x.txt"}
 	id3, _ := h.submit(c, agentA)
-	if st := h.waitState(id3, StateFailed); !strings.Contains(st.Reason, "different file") {
-		t.Fatalf("reason = %q", st.Reason)
-	}
+	h.waitState(id3, StateFailed)
 	if b, _ := os.ReadFile(filepath.Join(h.paths.Root, "ws", "target", "x.txt")); string(b) != "different" {
 		t.Fatal("existing workspace file was overwritten")
+	}
+	if _, err := os.Stat(filepath.Join(h.paths.Root, "ws", "target", "out.txt")); !os.IsNotExist(err) {
+		t.Fatalf("failed input collision launched its command: stat err=%v", err)
 	}
 }

@@ -35,18 +35,18 @@ func init() {
 		},
 		Summary: "print provider config that lets an agent here use SERVICE on DEVICE",
 		Flags: func(fs *flag.FlagSet) {
-			choiceFlag(fs, "for", "omp", "which client config to print", "omp", "pi", "openai")
-			fs.String("agent", "", "agent whose messh token is the API key (`NAME`; default: the --for harness name)")
+			choiceFlag(fs, "for", "openai", "which client config to print", "omp", "pi", "openai")
+			fs.String("agent", "", "required for generic config; agent whose messh token is the API key")
 			listFlag(fs, "model", "model `ID` to configure (repeatable; default: ask the service)")
 			fs.Duration("timeout", 30*time.Second, "how long to wait for the model list (`DURATION`; the owner may have to approve it)")
 		},
-		Output: `{for, provider, base_url, api_key_command, models[], config (YAML text for omp, provider object for pi, setup text for openai; models[] is empty when the list could not be fetched)}`,
+		Output: `{for, provider, base_url, api_key_command, models[], config}`,
 		Person: "the owner of DEVICE may have to approve listing models",
 		Waits:  "up to --timeout for the service's model list when --model is not given",
 		Examples: []string{
-			"messh llm config desktop unsloth",
+			"messh llm config desktop unsloth --for omp",
 			"messh llm config desktop unsloth --for pi",
-			"messh llm config desktop unsloth --for openai --agent omp --model llama-3",
+			"messh llm config desktop unsloth --agent model-client --model llama-3",
 		},
 		Run: func(c *Context) error { return runLLMConfig(c) },
 	})
@@ -113,17 +113,9 @@ func runLLMConfig(c *Context) error {
 	models := c.List("model")
 	timeout := c.Duration("timeout")
 
-	switch harness {
-	case "omp", "pi":
-		if agent == "" {
-			agent = harness
-		}
-	case "openai":
-		if agent == "" {
-			return errors.New("--for openai needs --agent NAME (the agent whose token the client will use)")
-		}
-	default:
-		return fmt.Errorf("--for must be omp, pi or openai, not %q", harness)
+	agent, err = llmConfigAgent(harness, agent)
+	if err != nil {
+		return err
 	}
 	if _, err := paths.AgentToken(agent); err != nil {
 		return fmt.Errorf("agent %q is not registered on this device: run `messh agent add %s` first", agent, agent)
@@ -175,46 +167,11 @@ func runLLMConfig(c *Context) error {
 
 	var human strings.Builder
 	var cfgVal any
-	switch harness {
-	case "omp":
-		yml := ompModelsYAML(provider, svc.BaseURL, tokenCmd, models)
-		fmt.Fprint(&human, yml)
-		fmt.Fprintf(&human, "\nMerge this into ~/.omp/agent/models.yml (under the existing \"providers:\" key, if any). The \"!\" makes omp\n"+
-			"run the command for the key, so the token is never stored in the file. Select a model with /model or\n"+
-			"--model %s/<id>.\n%s\n", provider, wait)
-		if len(models) == 0 {
-			fmt.Fprintf(&human, "The model list could not be fetched, so omp discovers it from %s/models on start; that request needs\n"+
-				"approval too unless %s's entry sets auto.read. Rerun with --model ID to list models explicitly.\n", svc.BaseURL, svc.Service)
-		}
-		cfgVal = yml
-	case "pi":
-		if len(models) == 0 {
-			return fmt.Errorf("pi needs the model IDs: rerun with --model ID for each model (%v)", modelErr)
-		}
-		out, err := piModelsJSON(provider, svc.BaseURL, tokenCmd, models)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(&human, "%s\n\nMerge this into ~/.pi/agent/models.json (under \"providers\"). The \"!\" makes pi run the command for\n"+
-			"the key at request time. compat turns off the developer role and reasoning_effort, which local servers\n"+
-			"often reject; remove it if %s supports them.\n%s\n", out, svc.Service, wait)
-		var obj any
-		if err := json.Unmarshal([]byte(out), &obj); err != nil {
-			return err
-		}
-		cfgVal = obj
-	case "openai":
-		fmt.Fprintf(&human, "Base URL  %s\nAPI key   the output of `%s` (sent as Authorization: Bearer; x-api-key works too)\n", svc.BaseURL, tokenCmd)
-		if len(models) > 0 {
-			fmt.Fprintf(&human, "Models    %s\n", strings.Join(models, ", "))
-		}
-		fmt.Fprintf(&human, "\nFor the OpenAI SDKs and most tools:\n  export OPENAI_BASE_URL=%s\n  export OPENAI_API_KEY=\"$(%s)\"\n"+
-			"PowerShell:\n  $env:OPENAI_BASE_URL = '%s'\n  $env:OPENAI_API_KEY = (%s)\n"+
-			"Anthropic-style clients: base URL %s (POST /v1/messages), same key as x-api-key.\n\n%s\n"+
-			"Keep client timeouts at 10 minutes or more while prompts are pending (the OpenAI SDKs default to 10 minutes).\n",
-			svc.BaseURL, tokenCmd, svc.BaseURL, tokenCmd, strings.TrimSuffix(svc.BaseURL, "/v1"), wait)
-		cfgVal = human.String()
+	text, cfgVal, err := renderLLMClientConfig(harness, provider, svc.BaseURL, tokenCmd, models, modelErr, wait, svc.Service)
+	if err != nil {
+		return err
 	}
+	human.WriteString(text)
 	return c.Emit(map[string]any{
 		"for":             harness,
 		"provider":        provider,
@@ -278,53 +235,4 @@ func fetchModels(baseURL, token string, timeout time.Duration) ([]string, error)
 		return nil, errors.New("the service lists no models")
 	}
 	return ids, nil
-}
-
-// ompModelsYAML renders an omp models.yml provider (docs: models.md, "Command-resolved secrets").
-func ompModelsYAML(provider, baseURL, tokenCmd string, models []string) string {
-	var b strings.Builder
-	b.WriteString("providers:\n")
-	fmt.Fprintf(&b, "  %s:\n", provider)
-	fmt.Fprintf(&b, "    baseUrl: %s\n", yamlString(baseURL))
-	fmt.Fprintf(&b, "    apiKey: %s\n", yamlString("!"+tokenCmd))
-	b.WriteString("    api: openai-completions\n")
-	if len(models) == 0 {
-		b.WriteString("    discovery:\n      type: openai-models-list\n")
-		return b.String()
-	}
-	b.WriteString("    models:\n")
-	for _, m := range models {
-		fmt.Fprintf(&b, "      - id: %s\n", yamlString(m))
-	}
-	return b.String()
-}
-
-// yamlString quotes s as a YAML double-quoted scalar (JSON strings are valid ones).
-func yamlString(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
-// piModelsJSON renders a pi models.json provider (pi docs/models.md).
-func piModelsJSON(provider, baseURL, tokenCmd string, models []string) (string, error) {
-	type model struct {
-		ID string `json:"id"`
-	}
-	type compat struct {
-		SupportsDeveloperRole   bool `json:"supportsDeveloperRole"`
-		SupportsReasoningEffort bool `json:"supportsReasoningEffort"`
-	}
-	type prov struct {
-		BaseURL string  `json:"baseUrl"`
-		API     string  `json:"api"`
-		APIKey  string  `json:"apiKey"`
-		Compat  compat  `json:"compat"`
-		Models  []model `json:"models"`
-	}
-	p := prov{BaseURL: baseURL, API: "openai-completions", APIKey: "!" + tokenCmd}
-	for _, m := range models {
-		p.Models = append(p.Models, model{ID: m})
-	}
-	out, err := json.MarshalIndent(map[string]map[string]prov{"providers": {provider: p}}, "", "  ")
-	return string(out), err
 }

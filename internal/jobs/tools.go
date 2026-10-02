@@ -29,7 +29,9 @@ var (
 	submitSchema = json.RawMessage(`{
   "type":"object",
   "properties":{
-    "command":{"type":"string","description":"Program to run, resolved on this device: a bare name found on PATH (e.g. python, powershell, nvidia-smi) or an absolute path. With shell:true this is the complete command line instead."},
+    "request_id":{"type":"string","minLength":1,"maxLength":128},
+    "recovery":{"type":"object","properties":{"checkpoint":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["checkpoint","args"],"additionalProperties":false},
+    "command":{"type":"string","description":"Program to run, resolved on this device: a bare name found on PATH or an absolute path."},
     "args":{"type":"array","items":{"type":"string"},"description":"Arguments, one array element each; no quoting needed. Leave empty with shell:true."},
     "cwd":{"type":"string","description":"Directory to start in, relative to the job workspace (forward slashes, must stay inside it). Default: the workspace root."},
     "env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables to add or override on top of the user's environment on this device."},

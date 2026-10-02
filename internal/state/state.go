@@ -122,7 +122,8 @@ func (p Paths) ControlToken() (string, error) {
 	return readOrCreateToken(p.ControlTokenFile())
 }
 
-// WriteFileAtomic replaces path with data via a temporary file and rename.
+// WriteFileAtomic durably replaces path with data using a synced temporary file,
+// an atomic platform replacement, and a parent-directory sync where supported.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -132,26 +133,32 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpName := tmp.Name()
+	cleanup := func() { _ = tmp.Close(); _ = os.Remove(tmpName) }
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
+		cleanup()
+		return fmt.Errorf("write temporary file: %w", err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		cleanup()
+		return fmt.Errorf("set temporary file permissions: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("sync temporary file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close temporary file: %w", err)
 	}
-	if err := os.Chmod(tmpName, perm); err != nil {
-		os.Remove(tmpName)
-		return err
+	if err := replaceFile(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("replace %s: %w", path, err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return err
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync directory for %s: %w", path, err)
 	}
 	return nil
 }
-
 func readJSON(path string, v any) error {
 	data, err := os.ReadFile(path)
 	if err != nil {

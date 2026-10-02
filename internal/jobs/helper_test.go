@@ -74,6 +74,46 @@ func helperMain(mode string, args []string) int {
 			fmt.Printf("line %05d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n", i)
 		}
 		return 0
+	case "count":
+		f, err := os.OpenFile(args[0], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if _, err := io.WriteString(f, "run\n"); err != nil {
+			f.Close()
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if err := f.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	case "checkpoint":
+		path := os.Getenv("MESSH_CHECKPOINT")
+		if path == "" {
+			return 10
+		}
+		if os.Getenv("MESSH_RESUMED") == "1" {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 11
+			}
+			fmt.Printf("resumed-checkpoint:%s argv:%s\n", b, strings.Join(args, "|"))
+			return 0
+		}
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, []byte(args[0]), 0o600); err != nil {
+			return 12
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			return 13
+		}
+		fmt.Println("before-crash")
+		time.Sleep(time.Minute)
+		return 0
 	}
 	return 2
 }
@@ -303,7 +343,7 @@ func (h *harness) state(id string) State {
 
 func (h *harness) waitState(id string, want State) Status {
 	h.t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if h.state(id) == want {
 			return h.status(id)

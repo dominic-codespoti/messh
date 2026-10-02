@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -34,6 +35,15 @@ type peerConn struct {
 	session   *mcp.ClientSession
 	transport *http.Transport
 }
+
+// peerCallError distinguishes a definitive JSON-RPC rejection from transport failure.
+type peerCallError struct {
+	err      error
+	response bool
+}
+
+func (e *peerCallError) Error() string { return e.err.Error() }
+func (e *peerCallError) Unwrap() error { return e.err }
 
 func (c *peerConn) close() {
 	c.session.Close()
@@ -233,7 +243,7 @@ func (ps *peerSet) refreshAsync(id string) {
 	}
 	ps.busy[id] = true
 	ps.mu.Unlock()
-	go func() {
+	ps.n.goRun(func() {
 		defer func() {
 			ps.mu.Lock()
 			delete(ps.busy, id)
@@ -244,13 +254,13 @@ func (ps *peerSet) refreshAsync(id string) {
 		if err := ps.refresh(ctx, id); err != nil && ps.n.ctx.Err() == nil {
 			ps.n.log.Debug("peer refresh failed", "peer", identity.Short(id), "error", err)
 		}
-	}()
+	})
 }
 
 // refreshSoon retries a refresh a few times after pairing, while the other
 // side may still be waiting for its user to confirm.
 func (ps *peerSet) refreshSoon(id string) {
-	go func() {
+	ps.n.goRun(func() {
 		for _, d := range []time.Duration{0, 2 * time.Second, 5 * time.Second, 15 * time.Second, 30 * time.Second} {
 			select {
 			case <-ps.n.ctx.Done():
@@ -264,5 +274,41 @@ func (ps *peerSet) refreshSoon(id string) {
 				return
 			}
 		}
-	}()
+	})
+}
+
+// callRaw preserves transport failures so durable operations can distinguish an unanswered peer from a peer response.
+func (ps *peerSet) callRaw(ctx context.Context, id, tool string, args json.RawMessage, agent string) (*mcp.CallToolResult, error) {
+	if _, ok := ps.n.roster.Get(id); !ok {
+		return nil, fmt.Errorf("paired peer %s was removed", identity.Short(id))
+	}
+	params := &mcp.CallToolParams{Name: tool, Meta: mcp.Meta{metaAgent: agent}}
+	if len(args) > 0 {
+		params.Arguments = args
+	}
+	var res *mcp.CallToolResult
+	_, _, err := ps.withPeer(ctx, id, func(s *mcp.ClientSession) error {
+		var callErr error
+		res, callErr = s.CallTool(ctx, params)
+		var rpcErr *jsonrpc.Error
+		if errors.As(callErr, &rpcErr) {
+			switch rpcErr.Code {
+			case -32003, -32004, -32005:
+				// The SDK uses these private codes for client/server closure and
+				// transport rejection; they do not confirm a target tool response.
+				return callErr
+			default:
+				return &peerCallError{err: callErr, response: true}
+			}
+		}
+		return callErr
+	})
+	if err != nil {
+		var callErr *peerCallError
+		if errors.As(err, &callErr) {
+			return res, err
+		}
+		return res, &peerCallError{err: err}
+	}
+	return res, nil
 }

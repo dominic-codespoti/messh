@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -21,7 +20,7 @@ func init() {
 		Flags: func(fs *flag.FlagSet) {
 			choiceFlag(fs, "tools", "", "tool mode the agent sees", state.ToolsCompact, state.ToolsFull)
 		},
-		Output:  `{agent, mode, created (true when the token is new), mcp_url, token_command, omp_mcp_json, pi_instructions}`,
+		Output:  `{agent, mode, created, mcp_url, token_command}`,
 		Mutates: true,
 		Examples: []string{
 			"messh agent add pi",
@@ -148,7 +147,7 @@ func init() {
 }
 
 // agentAdd registers name (or keeps an existing agent's token), applies the
-// requested tool mode, and prints how to connect each kind of agent.
+// requested tool mode, and prints generic MCP connection details.
 func agentAdd(c *Context, name, mode string) error {
 	paths, err := c.Paths()
 	if err != nil {
@@ -175,28 +174,13 @@ func agentAdd(c *Context, name, mode string) error {
 	}
 	tokenCmd := tokenCommand(name, true, stateDir)
 	url := localMCPURL(paths)
-	type server struct {
-		Type    string            `json:"type"`
-		URL     string            `json:"url"`
-		Headers map[string]string `json:"headers"`
-	}
-	cfg := map[string]map[string]server{"mcpServers": {"messh": {
-		Type:    "http",
-		URL:     url,
-		Headers: map[string]string{"Authorization": "!" + tokenCmd},
-	}}}
-	out, _ := json.MarshalIndent(cfg, "", "  ")
-
 	var b strings.Builder
 	if existed {
 		fmt.Fprintf(&b, "Agent %q is already registered; its token is unchanged. Tool mode: %s.\n\n", name, current)
 	} else {
 		fmt.Fprintf(&b, "Registered agent %q. Tool mode: %s.\n\n", name, current)
 	}
-	fmt.Fprintf(&b, "For omp, merge this into ~/.omp/agent/mcp.json (the \"!\" makes omp run the command for the header; "+
-		"keep the server name \"messh\": omp drops servers named \"browser\" or \"playwright\"):\n%s\n\n", out)
-	fmt.Fprintf(&b, "Other MCP clients: connect to %s with header \"Authorization: $(%s)\".\n\n", url, tokenCmd)
-	fmt.Fprintf(&b, "%s\n\n", strings.TrimRight(piInstructions(name, tokenCmd, url), "\n"))
+	fmt.Fprintf(&b, "Connect an MCP client to %s with header \"Authorization: $(%s)\".\n\n", url, tokenCmd)
 	other := state.ToolsFull
 	if current == state.ToolsFull {
 		other = state.ToolsCompact
@@ -209,16 +193,14 @@ func agentAdd(c *Context, name, mode string) error {
 		fmt.Fprintf(&b, "and reaches each device's tools with mesh_tools (search) and mesh_call (run), keeping its context small.\n")
 	}
 	fmt.Fprintf(&b, "Switch with `messh agent mode %s %s%s`; it applies from the agent's next request.\n", name, other, stateFlag(stateDir))
-	fmt.Fprintf(&b, "Teach a shell-capable agent the messh CLI: messh skill install --for omp|pi\n")
+	fmt.Fprintf(&b, "Teach a shell-capable agent the messh CLI: messh skill install --for omp|pi|agents\n")
 
 	return c.Emit(map[string]any{
-		"agent":           name,
-		"mode":            current,
-		"created":         !existed,
-		"mcp_url":         url,
-		"token_command":   tokenCmd,
-		"omp_mcp_json":    cfg,
-		"pi_instructions": piInstructions(name, tokenCmd, url),
+		"agent":         name,
+		"mode":          current,
+		"created":       !existed,
+		"mcp_url":       url,
+		"token_command": tokenCmd,
 	}, func(w io.Writer) {
 		io.WriteString(w, b.String())
 	})

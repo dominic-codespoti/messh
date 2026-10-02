@@ -70,12 +70,12 @@ type Run struct {
 	Manual    bool            `json:"manual,omitempty"` // started by run-now
 }
 
-// Fire is a call the runner should perform now.
 type Fire struct {
 	Schedule
-	Scheduled time.Time // the fire time; zero for run-now
-	Missed    bool
-	Manual    bool
+	Scheduled   time.Time `json:"scheduled,omitzero"`
+	Missed      bool      `json:"missed,omitempty"`
+	Manual      bool      `json:"manual,omitempty"`
+	OperationID string    `json:"operation_id"` // stable identity for this occurrence, distinct from Schedule.ID
 }
 
 // PauseRequest is the body of the control API's pause endpoint.
@@ -85,14 +85,12 @@ type PauseRequest struct {
 
 // Options tunes a Store; zero values select the defaults.
 type Options struct {
-	Now      func() time.Time // default time.Now
-	Location *time.Location   // zone for local times and days; default time.Local
-	MinIn    time.Duration    // shortest "in"; default MinIn
+	Now      func() time.Time
+	Location *time.Location
+	MinIn    time.Duration
 }
 
 // Store holds every agent's schedules and persists them atomically.
-// Methods taking an agent only see that agent's schedules; the empty agent
-// means all of them (the owner's CLI).
 type Store struct {
 	path  string
 	now   func() time.Time
@@ -100,22 +98,19 @@ type Store struct {
 	minIn time.Duration
 
 	mu       sync.Mutex
-	list     []*Schedule // in creation order
-	inflight map[string]bool
+	list     []*Schedule
+	inflight map[string]Fire // keyed by schedule ID; contains the full replay envelope
 	changed  chan struct{}
 }
 
 type fileFormat struct {
 	Version   int         `json:"version"`
 	Schedules []*Schedule `json:"schedules"`
+	Inflight  []Fire      `json:"inflight,omitempty"`
 }
 
-// Open loads the schedules at path; a missing file is an empty store.
 func Open(path string, o Options) (*Store, error) {
-	st := &Store{
-		path: path, now: o.Now, loc: o.Location, minIn: o.MinIn,
-		inflight: map[string]bool{}, changed: make(chan struct{}, 1),
-	}
+	st := &Store{path: path, now: o.Now, loc: o.Location, minIn: o.MinIn, inflight: map[string]Fire{}, changed: make(chan struct{}, 1)}
 	if st.now == nil {
 		st.now = time.Now
 	}
@@ -140,12 +135,33 @@ func Open(path string, o Options) (*Store, error) {
 		if s == nil || s.ID == "" {
 			continue
 		}
-		// The file is indented for its owner; keep the call's bytes as they were stored.
 		s.Running, s.Arguments = false, compactJSON(s.Arguments)
 		for i := range s.Runs {
 			s.Runs[i].Result = compactJSON(s.Runs[i].Result)
 		}
 		st.list = append(st.list, s)
+	}
+	byID := make(map[string]*Schedule, len(st.list))
+	for _, s := range st.list {
+		byID[s.ID] = s
+	}
+	for _, fire := range f.Inflight {
+		s := byID[fire.ID]
+		if s == nil || fire.OperationID == "" {
+			continue
+		}
+		fire.Arguments = compactJSON(fire.Arguments)
+		if fire.Tool == "job_submit" {
+			st.inflight[s.ID] = fire
+			continue
+		}
+		now := st.now().Round(0)
+		s.addRun(Run{Scheduled: fire.Scheduled, Started: now, Finished: now, Error: "interrupted: node stopped while this scheduled call had an ambiguous outcome; not replayed", Missed: fire.Missed, Manual: fire.Manual})
+	}
+	if len(st.inflight) != len(f.Inflight) {
+		if err := st.save(); err != nil {
+			return nil, fmt.Errorf("persist recovered schedules: %w", err)
+		}
 	}
 	return st, nil
 }
@@ -243,13 +259,14 @@ func (st *Store) Remove(agent, id string) (Schedule, error) {
 	if err != nil {
 		return Schedule{}, err
 	}
+	before := st.snapshot()
 	i := slices.Index(st.list, s)
 	st.list = slices.Delete(st.list, i, i+1)
+	delete(st.inflight, s.ID)
 	if err := st.save(); err != nil {
-		st.list = slices.Insert(st.list, i, s)
+		st.restore(before)
 		return Schedule{}, err
 	}
-	delete(st.inflight, s.ID)
 	st.signal()
 	return st.view(s), nil
 }
@@ -287,11 +304,26 @@ func (st *Store) Claim(agent, id string) (Fire, error) {
 	if err != nil {
 		return Fire{}, err
 	}
-	if st.inflight[s.ID] {
+	if _, ok := st.inflight[s.ID]; ok {
 		return Fire{}, ErrRunning
 	}
-	st.inflight[s.ID] = true
-	return Fire{Schedule: st.fireCopy(s), Manual: true}, nil
+	opID, err := st.newOperationID()
+	if err != nil {
+		return Fire{}, err
+	}
+	fire := Fire{Schedule: st.fireCopy(s), Manual: true, OperationID: opID}
+	if fire.Tool == "job_submit" {
+		fire.Arguments, err = jobArgumentsForOperation(fire.Arguments, fire.OperationID)
+		if err != nil {
+			return Fire{}, err
+		}
+	}
+	st.inflight[s.ID] = fire
+	if err := st.save(); err != nil {
+		delete(st.inflight, s.ID)
+		return Fire{}, err
+	}
+	return fire, nil
 }
 
 // Due applies the timing rules at now and returns the calls to perform. Each
@@ -304,16 +336,22 @@ func (st *Store) Claim(agent, id string) (Fire, error) {
 //   - a late recurring schedule records one missed run and moves to its next
 //     future occurrence without running.
 //
-// The error reports a failure to persist; the returned fires are still valid.
+// Fires are returned only after their claim and occurrence identity are committed.
+// On persistence failure no fire is returned and the timing changes are rolled back.
 func (st *Store) Due(now time.Time) ([]Fire, error) {
 	now = now.Round(0)
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	var before storeSnapshot
+	captured := false
 	var fires []Fire
 	dirty := false
 	for _, s := range st.list {
-		if !s.Enabled || s.Paused || st.inflight[s.ID] || s.Next.IsZero() || s.Next.After(now) {
+		if !s.Enabled || s.Paused || st.inflight[s.ID].OperationID != "" || s.Next.IsZero() || s.Next.After(now) {
 			continue
+		}
+		if !captured {
+			before, captured = st.snapshot(), true
 		}
 		dirty = true
 		due := s.Next
@@ -322,8 +360,7 @@ func (st *Store) Due(now time.Time) ([]Fire, error) {
 		if s.Spec.Recurring() {
 			s.Next = s.Spec.next(due, now, st.loc).Round(0)
 			if late > LateTolerance {
-				missedRun.Error = fmt.Sprintf("missed the run due at %s: this node was not running, asleep, or busy with the previous run; next run at %s",
-					st.local(due), st.local(s.Next))
+				missedRun.Error = fmt.Sprintf("missed the run due at %s: this node was not running, asleep, or busy with the previous run; next run at %s", st.local(due), st.local(s.Next))
 				s.addRun(missedRun)
 				continue
 			}
@@ -335,14 +372,31 @@ func (st *Store) Due(now time.Time) ([]Fire, error) {
 				continue
 			}
 		}
-		st.inflight[s.ID] = true
-		fires = append(fires, Fire{Schedule: st.fireCopy(s), Scheduled: due, Missed: late > LateTolerance})
+		opID, err := st.newOperationID()
+		if err != nil {
+			st.restore(before)
+			return nil, err
+		}
+		fire := Fire{Schedule: st.fireCopy(s), Scheduled: due, Missed: late > LateTolerance, OperationID: opID}
+		if fire.Tool == "job_submit" {
+			fire.Arguments, err = jobArgumentsForOperation(fire.Arguments, fire.OperationID)
+			if err != nil {
+				st.restore(before)
+				return nil, err
+			}
+		}
+		st.inflight[s.ID] = fire
+		fires = append(fires, fire)
 	}
 	if !dirty {
 		return nil, nil
 	}
 	slices.SortStableFunc(fires, func(a, b Fire) int { return a.Scheduled.Compare(b.Scheduled) })
-	return fires, st.save()
+	if err := st.save(); err != nil {
+		st.restore(before)
+		return nil, err
+	}
+	return fires, nil
 }
 
 // Record stores the outcome of a fire returned by Due or Claim and ends its
@@ -350,19 +404,24 @@ func (st *Store) Due(now time.Time) ([]Fire, error) {
 // newest MaxRuns runs. Runs of removed schedules are dropped.
 func (st *Store) Record(id string, r Run) error {
 	if len(r.Result) > 0 && !json.Valid(r.Result) {
-		r.Result = marshalString(string(r.Result)) // one bad result must not make the file unsavable
+		r.Result = marshalString(string(r.Result))
 	}
 	r.Result = TruncateResult(compactJSON(r.Result), MaxResult)
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	delete(st.inflight, id)
-	st.signal()
 	i := slices.IndexFunc(st.list, func(s *Schedule) bool { return s.ID == id })
 	if i < 0 {
 		return nil
 	}
+	before := st.snapshot()
 	st.list[i].addRun(r)
-	return st.save()
+	delete(st.inflight, id)
+	if err := st.save(); err != nil {
+		st.restore(before)
+		return err
+	}
+	st.signal()
+	return nil
 }
 
 // NextWake returns the earliest fire time among schedules that can fire.
@@ -371,7 +430,7 @@ func (st *Store) NextWake() (time.Time, bool) {
 	defer st.mu.Unlock()
 	var next time.Time
 	for _, s := range st.list {
-		if !s.Enabled || s.Paused || st.inflight[s.ID] || s.Next.IsZero() {
+		if !s.Enabled || s.Paused || st.inflight[s.ID].OperationID != "" || s.Next.IsZero() {
 			continue
 		}
 		if next.IsZero() || s.Next.Before(next) {
@@ -472,8 +531,44 @@ func (st *Store) find(agent, id string) (*Schedule, error) {
 func (st *Store) view(s *Schedule) Schedule {
 	c := *s
 	c.Runs = slices.Clone(s.Runs)
-	c.Running = st.inflight[s.ID]
+	_, c.Running = st.inflight[s.ID]
 	return c
+}
+
+type storeSnapshot struct {
+	list     []*Schedule
+	inflight map[string]Fire
+}
+
+func (st *Store) snapshot() storeSnapshot {
+	x := storeSnapshot{list: make([]*Schedule, len(st.list)), inflight: make(map[string]Fire, len(st.inflight))}
+	for i, s := range st.list {
+		c := *s
+		c.Arguments = slices.Clone(s.Arguments)
+		c.Runs = slices.Clone(s.Runs)
+		x.list[i] = &c
+	}
+	for id, f := range st.inflight {
+		f.Schedule.Arguments = slices.Clone(f.Arguments)
+		x.inflight[id] = f
+	}
+	return x
+}
+func (st *Store) restore(x storeSnapshot) { st.list, st.inflight = x.list, x.inflight }
+
+// Pending returns durable job submissions that may safely be retried after restart.
+func (st *Store) Pending() []Fire {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var out []Fire
+	for _, f := range st.inflight {
+		if f.Tool == "job_submit" {
+			f.Arguments = slices.Clone(f.Arguments)
+			out = append(out, f)
+		}
+	}
+	slices.SortFunc(out, func(a, b Fire) int { return strings.Compare(a.OperationID, b.OperationID) })
+	return out
 }
 
 func (st *Store) fireCopy(s *Schedule) Schedule {
@@ -494,6 +589,34 @@ func (st *Store) newID() string {
 		}
 	}
 }
+func (st *Store) newOperationID() (string, error) {
+	for {
+		var b [16]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return "", err
+		}
+		id := hex.EncodeToString(b[:])
+		used := false
+		for _, f := range st.inflight {
+			if f.OperationID == id {
+				used = true
+				break
+			}
+		}
+		if !used {
+			return id, nil
+		}
+	}
+}
+func jobArgumentsForOperation(raw json.RawMessage, operationID string) (json.RawMessage, error) {
+	var args map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &args); err != nil || args == nil {
+		return nil, errors.New("job_submit arguments must be a JSON object")
+	}
+	key, _ := json.Marshal("schedule-" + operationID)
+	args["request_id"] = key
+	return json.Marshal(args)
+}
 
 func (st *Store) signal() {
 	select {
@@ -505,7 +628,12 @@ func (st *Store) signal() {
 // save writes the store; callers hold st.mu. The file holds call arguments
 // and results, so it is owner-only.
 func (st *Store) save() error {
-	data, err := json.MarshalIndent(fileFormat{Version: 1, Schedules: st.list}, "", "  ")
+	inflight := make([]Fire, 0, len(st.inflight))
+	for _, f := range st.inflight {
+		inflight = append(inflight, f)
+	}
+	slices.SortFunc(inflight, func(a, b Fire) int { return strings.Compare(a.ID, b.ID) })
+	data, err := json.MarshalIndent(fileFormat{Version: 1, Schedules: st.list, Inflight: inflight}, "", "  ")
 	if err != nil {
 		return err
 	}

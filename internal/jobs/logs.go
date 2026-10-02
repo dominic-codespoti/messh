@@ -39,11 +39,62 @@ type logSink struct {
 }
 
 func newLogSink(dir, name string, headMax, segMax int64) (*logSink, error) {
-	f, err := os.OpenFile(filepath.Join(dir, name+".log"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	headPath := filepath.Join(dir, name+".log")
+	f, err := os.OpenFile(headPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	return &logSink{dir: dir, name: name, headMax: headMax, segMax: segMax, head: f}, nil
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if st.Size() > headMax {
+		if err := f.Truncate(headMax); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+
+	stream := openLog(dir, name)
+	headN := min(st.Size(), headMax)
+	if stream.total > headN && headN < headMax {
+		// A tail segment means the head was already sealed. Do not append newer
+		// bytes to the head merely because it is now shorter or missing.
+		headN = headMax
+	}
+	var tail []logSeg
+	for _, seg := range stream.segs {
+		if filepath.Clean(seg.path) != filepath.Clean(headPath) {
+			tail = append(tail, seg)
+		}
+	}
+	if len(tail) > 2 {
+		for _, seg := range tail[:len(tail)-2] {
+			if err := os.Remove(seg.path); err != nil && !os.IsNotExist(err) {
+				f.Close()
+				return nil, err
+			}
+		}
+		tail = tail[len(tail)-2:]
+	}
+	s := &logSink{dir: dir, name: name, headMax: headMax, segMax: segMax, head: f, headN: headN, abs: stream.total}
+	if n := len(tail); n > 0 {
+		last := tail[n-1]
+		s.curPath = last.path
+		if n > 1 {
+			s.prevPath = tail[n-2].path
+		}
+		if last.size < segMax {
+			s.cur, err = os.OpenFile(last.path, os.O_WRONLY|os.O_APPEND, 0o600)
+			if err != nil {
+				f.Close()
+				return nil, err
+			}
+			s.curN = last.size
+		}
+	}
+	return s, nil
 }
 
 // Write never fails: a full disk must not wedge the job's pipe.

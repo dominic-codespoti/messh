@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,7 +32,8 @@ func TestUpdateCountsScheduledCallsWaitingForCapacity(t *testing.T) {
 	n.ctx, n.cancel = context.WithCancel(t.Context())
 	defer n.cancel()
 	n.log = slog.New(slog.DiscardHandler)
-	store, err := schedule.Open(filepath.Join(t.TempDir(), "schedules.json"), schedule.Options{})
+	path := filepath.Join(t.TempDir(), "schedules.json")
+	store, err := schedule.Open(path, schedule.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,8 +60,24 @@ func TestUpdateCountsScheduledCallsWaitingForCapacity(t *testing.T) {
 	n.cancel()
 	n.wg.Wait()
 	record, err := store.Get("", stored.ID)
-	if err != nil || record.Running || len(record.Runs) != 1 || record.Runs[0].OK {
-		t.Fatalf("canceled scheduled call did not settle: %+v (%v)", record, err)
+	if err != nil || !record.Running || len(record.Runs) != 0 {
+		t.Fatalf("canceled scheduled fire lost its durable in-flight identity: %+v (%v)", record, err)
+	}
+	recovered, err := schedule.Open(path, schedule.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = recovered.Get("", stored.ID)
+	if err != nil || record.Running || len(record.Runs) != 1 || record.Runs[0].OK || !strings.Contains(record.Runs[0].Error, "not replayed") {
+		t.Fatalf("restart did not classify the ambiguous ordinary fire without replay: %+v (%v)", record, err)
+	}
+	reopened, err := schedule.Open(path, schedule.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = reopened.Get("", stored.ID)
+	if err != nil || record.Running || len(record.Runs) != 1 {
+		t.Fatalf("classified fire was replayed again after restart: %+v (%v)", record, err)
 	}
 	lease, err := n.prepareUpdate(time.Now())
 	if err != nil {
@@ -70,6 +88,120 @@ func TestUpdateCountsScheduledCallsWaitingForCapacity(t *testing.T) {
 	}
 	if !n.consumeUpdateLease(lease.Lease, false, time.Now()) || !sc.runDue() {
 		t.Fatal("scheduler did not resume after maintenance abort")
+	}
+}
+
+func TestUpdateLeaseDefersAcceptedOutboxDelivery(t *testing.T) {
+	b := startGateNode(t, "target", &scriptSurface{})
+	a := startGateNode(t, "source", &scriptSurface{})
+	pair(t, b, a)
+	if _, err := a.paths.AddAgent("agent"); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{}, 1)
+	defer func() {
+		select {
+		case release <- struct{}{}:
+		default:
+		}
+	}()
+	var first atomic.Bool
+	first.Store(true)
+	var deliverAfterAbort atomic.Bool
+	a.remoteJobs.setPeerCall(func(ctx context.Context, id, tool string, args json.RawMessage, agent string) (*mcp.CallToolResult, error) {
+		if tool == "job_submit" && first.CompareAndSwap(true, false) {
+			entered <- struct{}{}
+			select {
+			case <-release:
+				return nil, errors.New("simulated transport failure before target delivery")
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if tool == "job_submit" && !deliverAfterAbort.Load() {
+			return nil, errors.New("target delivery withheld until lease abort")
+		}
+		return a.peers.callRaw(ctx, id, tool, args, agent)
+	})
+	args := json.RawMessage(`{"command":"echo maintenance","shell":true,"request_id":"maintenance-held-delivery"}`)
+	accepted, err := a.Call(t.Context(), b.ID(), "job_submit", args, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var submission struct {
+		JobID string `json:"job_id"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(resultText(accepted)), &submission); err != nil {
+		t.Fatal(err)
+	}
+	if submission.JobID == "" || submission.State != "pending_delivery" {
+		t.Fatalf("remote submission was not durably queued: %s", resultText(accepted))
+	}
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("outbox did not start its admitted delivery attempt")
+	}
+	if _, err := a.prepareUpdate(time.Now()); err == nil || !strings.Contains(err.Error(), "active requests") {
+		t.Fatalf("update preparation did not account for the active outbox delivery: %v", err)
+	}
+	release <- struct{}{}
+	waitFor(t, "outbox retry scheduled and attempt released", func() bool {
+		a.remoteJobs.mu.Lock()
+		defer a.remoteJobs.mu.Unlock()
+		record := a.remoteJobs.records[submission.JobID]
+		return record != nil && record.Attempt > 0 && record.NextTry.After(time.Now()) && !a.remoteJobs.busy[submission.JobID]
+	})
+	var lease control.UpdatePreparation
+	waitFor(t, "outbox attempt to drain before update lease", func() bool {
+		var prepareErr error
+		lease, prepareErr = a.prepareUpdate(time.Now())
+		return prepareErr == nil
+	})
+	a.remoteJobs.mu.Lock()
+	queued := a.remoteJobs.records[submission.JobID]
+	if queued == nil {
+		a.remoteJobs.mu.Unlock()
+		t.Fatal("accepted outbox record disappeared")
+	}
+	queued.NextTry = time.Now().Add(-time.Second)
+	queued.Updated = time.Now()
+	before := *queued
+	err = a.remoteJobs.saveLocked()
+	a.remoteJobs.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.remoteJobs.signal()
+	a.remoteJobs.deliver(submission.JobID)
+	timer := time.NewTimer(1200 * time.Millisecond)
+	select {
+	case <-timer.C:
+	case <-t.Context().Done():
+		timer.Stop()
+		t.Fatal(t.Context().Err())
+	}
+	after := a.remoteJobs.find(b.ID(), "agent", submission.JobID)
+	if after == nil || after.State != "pending_delivery" || after.Attempt != before.Attempt || !after.NextTry.Equal(before.NextTry) || after.Cancel || after.Delete {
+		t.Fatalf("refused admission changed accepted outbox work: before=%+v after=%+v", before, after)
+	}
+	if got := len(b.approvals.Pending()); got != 0 {
+		t.Fatalf("target received a job through the maintenance lease: approval tickets=%d", got)
+	}
+	if !a.consumeUpdateLease(lease.Lease, false, time.Now()) {
+		t.Fatal("could not abort update lease")
+	}
+	deliverAfterAbort.Store(true)
+	a.remoteJobs.signal()
+	waitFor(t, "accepted job delivered after lease abort", func() bool {
+		record := a.remoteJobs.find(b.ID(), "agent", submission.JobID)
+		return record != nil && record.State == "awaiting_approval" && len(b.approvals.Pending()) == 1
+	})
+	record := a.remoteJobs.find(b.ID(), "agent", submission.JobID)
+	if record == nil || record.ID != submission.JobID {
+		t.Fatalf("target acceptance changed durable job identity: %+v", record)
 	}
 }
 

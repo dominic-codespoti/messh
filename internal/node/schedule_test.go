@@ -294,3 +294,32 @@ func controlAPI(t *testing.T, n *Node, method, path string, in, out any) {
 		t.Fatalf("%s %s: decode: %v", method, path, err)
 	}
 }
+
+func TestScheduledJobRequestIDIsOccurrenceScoped(t *testing.T) {
+	args := json.RawMessage(`{"command":"echo","request_id":"static-key"}`)
+	first, err := scheduledJobArguments(schedule.Fire{Schedule: schedule.Schedule{Arguments: args}, OperationID: "op-one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := scheduledJobArguments(schedule.Fire{Schedule: schedule.Schedule{Arguments: args}, OperationID: "op-two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a, b map[string]json.RawMessage
+	if err := json.Unmarshal(first, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(second, &b); err != nil {
+		t.Fatal(err)
+	}
+	var firstID, secondID string
+	if err := json.Unmarshal(a["request_id"], &firstID); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b["request_id"], &secondID); err != nil {
+		t.Fatal(err)
+	}
+	if firstID != "schedule-op-one" || secondID != "schedule-op-two" || firstID == secondID {
+		t.Fatalf("request ids = %q, %q", firstID, secondID)
+	}
+}

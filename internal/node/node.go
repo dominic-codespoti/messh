@@ -70,12 +70,13 @@ type Node struct {
 	executable  string
 	maintenance maintenanceState
 
-	roster  *roster.Roster
-	gateway *gateway.Gateway
-	pairing *pairing
-	peers   *peerSet
-	files   *fileService
-	browser browserControl // the browser provider's control surface (stop, status)
+	roster     *roster.Roster
+	gateway    *gateway.Gateway
+	pairing    *pairing
+	peers      *peerSet
+	remoteJobs *remoteJobOutbox
+	files      *fileService
+	browser    browserControl // the browser provider's control surface (stop, status)
 
 	catalog *catalog.Provider // the service catalogue, nil if it failed to start; see llm.go
 
@@ -207,7 +208,17 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 	})
 	n.register(&nodeinfo.Provider{DeviceID: id.ID, DeviceName: name, Build: n.build})
+	n.remoteJobs, err = newRemoteJobOutbox(n)
+	if err != nil {
+		cancel()
+		meshLn.Close()
+		localLn.Close()
+		approvals.Close()
+		return nil, err
+	}
+	n.roster.OnChange(n.remoteJobs.pairedChanged)
 	n.startJobs()
+	n.remoteJobs.start()
 	n.startCatalog()
 	n.startBrowser()
 	n.rebuildTools()
@@ -339,6 +350,9 @@ func (n *Node) Call(ctx context.Context, deviceID, tool string, args json.RawMes
 	defer n.endWork()
 	if deviceID == n.id.ID {
 		return n.dispatch(ctx, tool, args, provider.Caller{DeviceID: n.id.ID, DeviceName: n.name, Agent: agent}), nil
+	}
+	if strings.HasPrefix(tool, "job_") && n.remoteJobs != nil {
+		return n.remoteJobs.call(ctx, deviceID, tool, args, agent)
 	}
 	if res := n.beforePeerCall(ctx, deviceID); res != nil {
 		return res, nil

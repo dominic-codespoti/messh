@@ -71,6 +71,9 @@ type Status struct {
 	StderrTail       []string     `json:"stderr_tail"`
 	LogsOmitted      bool         `json:"earlier_log_output_omitted,omitempty"`
 	Notes            []string     `json:"notes,omitempty"`
+	Recovery         *Recovery    `json:"recovery,omitempty"`
+	Attempt          int          `json:"attempt,omitempty"`
+	CheckpointSHA256 string       `json:"checkpoint_sha256,omitempty"`
 }
 
 // InputView is an input as reported to agents.
@@ -115,7 +118,7 @@ func (p *Provider) statusOf(id string, c provider.Caller, tail int) (Status, err
 		JobID: rec.ID, Label: rec.Label, State: rec.State, Reason: rec.Reason, Submitted: rec.Submitted,
 		Queued: rec.Queued, Started: rec.Started, Finished: rec.Finished, ExitCode: rec.ExitCode,
 		Command: rec.Argv(), Workspace: files.RootWorkspaces + "/" + rec.Workspace, Cwd: rec.Cwd, Resources: rec.Claims,
-		TimeoutSeconds: rec.TimeoutSec, QueuePosition: pos, WaitingFor: waiting, Notes: notes,
+		TimeoutSeconds: rec.TimeoutSec, QueuePosition: pos, WaitingFor: waiting, Notes: notes, Recovery: rec.Recovery, Attempt: rec.Attempt, CheckpointSHA256: rec.CheckpointSHA256,
 		Outputs: []OutputFile{}, StdoutTail: []string{}, StderrTail: []string{},
 	}
 	for _, in := range rec.Inputs {
@@ -335,7 +338,10 @@ func (p *Provider) callCancel(ctx context.Context, raw json.RawMessage, c provid
 		}
 		return provider.JSONResult(st)
 	}
-	p.cancelLocked(j)
+	if err := p.cancelLocked(j); err != nil {
+		p.mu.Unlock()
+		return nil, err
+	}
 	changed := j.changed
 	p.mu.Unlock()
 
@@ -431,9 +437,22 @@ func (p *Provider) callDelete(raw json.RawMessage, c provider.Caller) (*mcp.Call
 	if !shared {
 		p.deleting[ws] = true
 	}
+	receipt, hasReceipt := p.submissions[a.JobID]
+	if hasReceipt {
+		receipt.Deleted = true
+		if err := p.saveSubmissionLocked(a.JobID, receipt); err != nil {
+			j.deleting = false
+			if !shared {
+				delete(p.deleting, ws)
+			}
+			p.mu.Unlock()
+			return nil, fmt.Errorf("persist job deletion tombstone: %w", err)
+		}
+	}
 	p.mu.Unlock()
 
 	rmErr := os.RemoveAll(p.jobDir(a.JobID))
+	jobRmErr := rmErr
 	removedWS := false
 	if !shared {
 		dir, err := workspaceDir(p.paths, ws)
@@ -447,10 +466,16 @@ func (p *Provider) callDelete(raw json.RawMessage, c provider.Caller) (*mcp.Call
 	}
 
 	p.mu.Lock()
-	if rmErr == nil {
+	if jobRmErr == nil {
 		delete(p.jobs, a.JobID)
 	} else {
 		j.deleting = false
+		if hasReceipt {
+			receipt.Deleted = false
+			if err := p.saveSubmissionLocked(a.JobID, receipt); err != nil {
+				p.log.Error("restore submission receipt after failed delete", "job", a.JobID, "error", err)
+			}
+		}
 	}
 	if !shared {
 		delete(p.deleting, ws)

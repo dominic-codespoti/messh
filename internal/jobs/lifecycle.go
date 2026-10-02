@@ -35,23 +35,53 @@ func (p *Provider) callSubmit(ctx context.Context, args json.RawMessage, caller 
 	if !ok {
 		return nil, errors.New("job_submit must be approved by the device owner before it runs")
 	}
+	if res, found, err := p.LookupSubmission(args, caller); err != nil {
+		return nil, err
+	} else if found {
+		return res, nil
+	}
 	req, err := p.parseSubmit(args)
 	if err != nil {
 		return nil, err
 	}
-
+	submissionHash, err := SubmissionHash(args)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.hashInputs(req, req.Workspace); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	if p.closing {
 		p.mu.Unlock()
 		return nil, errors.New("the job service is shutting down")
 	}
 	id := newID()
-	for p.jobs[id] != nil {
-		id = newID()
+	if req.RequestID != "" {
+		id = SubmissionID(caller.DeviceID, caller.Agent, req.RequestID)
+	}
+	if existing := p.jobs[id]; existing != nil {
+		if existing.SubmissionHash != submissionHash {
+			p.mu.Unlock()
+			return nil, errors.New("request_id was already used for a different job_submit payload")
+		}
+		if strings.HasPrefix(existing.Reason, "acceptance incomplete:") {
+			reason := existing.Reason
+			p.mu.Unlock()
+			return nil, errors.New(reason)
+		}
+		res, err := provider.JSONResult(submitResult{JobID: existing.ID, State: existing.State, Workspace: files.RootWorkspaces + "/" + existing.Workspace, Message: "Previously accepted submission; inspect with job_status."})
+		p.mu.Unlock()
+		return res, err
 	}
 	ws := req.Workspace
 	if ws == "" {
 		ws = id
+	}
+	for i := range req.Inputs {
+		if req.Inputs[i].Rel == "" {
+			req.Inputs[i].Rel, req.Inputs[i].InPlace = inputRel(req.Inputs[i].Ref, ws)
+		}
 	}
 	if p.deleting[ws] {
 		p.mu.Unlock()
@@ -72,13 +102,36 @@ func (p *Provider) callSubmit(ctx context.Context, args json.RawMessage, caller 
 			ID: id, Label: req.Label, Owner: ownerOf(caller), State: StateSubmitted, Submitted: time.Now(),
 			Path: req.Path, Args: req.Args, Shell: req.Shell, Line: req.Line,
 			Workspace: ws, Cwd: req.Cwd, Env: req.Env, Claims: req.Claims, TimeoutSec: req.TimeoutSec,
+			RequestID: req.RequestID, SubmissionHash: submissionHash, Recovery: recoveryFromRequest(req.Recovery),
+			Submission: append(json.RawMessage(nil), args...), Inputs: append([]Input(nil), req.Inputs...), Exact: req.exact(),
 		},
 		seq: p.nextSeq, ticket: ticket, changed: make(chan struct{}), ready: make(chan struct{}),
 	}
 	// The approval wait must outlive this request, so it hangs off the provider.
 	j.ctx, j.cancel = context.WithCancel(p.ctx)
 	p.jobs[id] = j
-	p.persistLocked(j)
+	if err := p.persistLocked(j); err != nil {
+		delete(p.jobs, id)
+		if removeErr := os.Remove(filepath.Join(p.jobDir(id), "job.json")); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			p.log.Error("rollback incomplete accepted job", "job", id, "error", removeErr)
+		}
+		p.mu.Unlock()
+		return nil, fmt.Errorf("persist accepted job: %w", err)
+	}
+	if req.RequestID != "" {
+		if err := p.saveSubmissionLocked(id, submissionRecord{Hash: submissionHash, JobID: id, Owner: ownerOf(caller), Workspace: ws}); err != nil {
+			// Do not expose a partially accepted job when its replay receipt failed.
+			delete(p.jobs, id)
+			if removeErr := os.Remove(p.submissionPath(id)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				p.log.Error("rollback incomplete submission receipt", "job", id, "error", removeErr)
+			}
+			if removeErr := os.Remove(filepath.Join(p.jobDir(id), "job.json")); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				p.log.Error("rollback incomplete acceptance", "job", id, "error", removeErr)
+			}
+			p.mu.Unlock()
+			return nil, fmt.Errorf("persist submission receipt: %w", err)
+		}
+	}
 	p.wg.Add(1)
 	p.mu.Unlock()
 
@@ -102,67 +155,104 @@ func (p *Provider) callSubmit(ctx context.Context, args json.RawMessage, caller 
 
 // prepare snapshots inputs, proves the request still equals what was shown
 // to the owner, then waits for the decision.
-func (p *Provider) prepare(j *job, req *request) {
+func (p *Provider) prepare(j *job, req *request) { p.prepareInternal(j, req, true) }
+
+// prepareRestored restages original hashed inputs into the private job
+// workspace before waiting on a restored owner decision.
+func (p *Provider) prepareRestored(j *job, req *request) { p.prepareInternal(j, req, false) }
+
+func (p *Provider) prepareInternal(j *job, req *request, requirePending bool) {
 	defer p.wg.Done()
-	readyClosed := false
+	if j.ctx == nil {
+		j.ctx, j.cancel = context.WithCancel(p.ctx)
+	}
+	readyClosed := !requirePending
 	closeReady := func() {
 		if !readyClosed {
 			readyClosed = true
-			close(j.ready)
+			if j.ready != nil {
+				close(j.ready)
+			}
 		}
 	}
 	defer closeReady()
-
 	fail := func(reason string) {
-		j.ticket.Cancel()
+		if j.ticket != nil {
+			j.ticket.Cancel()
+		}
 		p.mu.Lock()
 		p.finishLocked(j, StateFailed, reason, nil)
 		p.mu.Unlock()
 	}
 
+	originalInputs := append([]Input(nil), req.Inputs...)
 	if err := p.snapshotInputs(j, req); err != nil {
-		if j.ctx.Err() == nil {
+		// Shutdown may interrupt a staged copy, but it must not hide an actual
+		// input validation or filesystem error that happened at the same time.
+		if !errors.Is(err, context.Canceled) {
 			fail(err.Error())
 		}
 		return
 	}
-	if !p.takePending(ownerKey(j.Owner), req.exact()) {
-		fail("the request changed between approval and execution (input files or the command differ from what was shown); submit again")
-		return
+	for i := range req.Inputs {
+		if i >= len(originalInputs) || req.Inputs[i].Ref != originalInputs[i].Ref || req.Inputs[i].SHA256 != originalInputs[i].SHA256 {
+			fail(fmt.Sprintf("input %s changed after submission approval", req.Inputs[i].Ref))
+			return
+		}
 	}
-
 	p.mu.Lock()
 	if j.State.Terminal() {
 		p.mu.Unlock()
 		return
 	}
 	j.Inputs = append([]Input(nil), req.Inputs...)
-	j.Exact = req.exact()
-	j.State = StateAwaitingApproval
-	p.touchLocked(j)
 	p.mu.Unlock()
+	if !p.commitAwaitingApproval(j) {
+		return
+	}
+	if !requirePending && j.Approved {
+		closeReady()
+		p.commitApproval(j)
+		return
+	}
+	if requirePending && !p.takePending(ownerKey(j.Owner), req.exact()) {
+		if j.ticket != nil {
+			j.ticket.Cancel()
+		}
+		p.mu.Lock()
+		p.finishLocked(j, StateFailed, "the request changed between approval and execution (input files or the command differ from what was shown); submit again", nil)
+		p.mu.Unlock()
+		return
+	}
 	closeReady()
 
+	if j.ticket == nil {
+		fail("approval ticket is unavailable")
+		return
+	}
 	ok, werr := j.ticket.Wait(j.ctx)
-
+	p.mu.Lock()
+	terminal := j.State.Terminal()
+	p.mu.Unlock()
+	if terminal {
+		return
+	}
+	if ok {
+		p.commitApproval(j)
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if j.State.Terminal() {
-		return // cancelled while waiting
+		return
 	}
-	switch {
-	case ok:
-		now := time.Now()
-		p.nextSeq++
-		j.seq = p.nextSeq
-		j.State, j.Queued = StateQueued, &now
-		p.touchLocked(j)
-		p.kick()
-	case p.ctx.Err() != nil:
-		p.finishLocked(j, StateInterrupted, "node shut down", nil)
-	case isExpiry(werr):
+	if p.ctx.Err() != nil {
+		// Shutdown is not a job outcome. Keep the last durable unapproved state.
+		return
+	}
+	if isExpiry(werr) {
 		p.finishLocked(j, StateFailed, "expired", nil)
-	default:
+	} else {
 		p.finishLocked(j, StateFailed, "denied", nil)
 	}
 }
@@ -178,9 +268,9 @@ func isExpiry(err error) bool {
 	return strings.Contains(s, "expire") || strings.Contains(s, "timed out") || strings.Contains(s, "timeout")
 }
 
-// snapshotInputs puts every input into the job workspace, preferring a hard
-// link (instant, immune to a later rename or replace of the source) over a
-// copy, and records the hash of what it holds.
+// snapshotInputs puts every input into the job workspace and records the hash
+// of the bytes it holds. Staged inputs are copied: a hard link would let a
+// later in-place write to the source mutate the accepted snapshot as well.
 func (p *Provider) snapshotInputs(j *job, req *request) error {
 	taken := map[string]string{}
 	for i := range req.Inputs {
@@ -195,7 +285,7 @@ func (p *Provider) snapshotInputs(j *job, req *request) error {
 			return fmt.Errorf("input %s: %w", in.Ref, err)
 		}
 		if in.InPlace {
-			sum, st, at, err := p.hashes.hashFile(src)
+			sum, st, at, err := hashFileExact(src)
 			if err != nil {
 				return fmt.Errorf("input %s: %w", in.Ref, err)
 			}
@@ -222,23 +312,24 @@ func (p *Provider) place(ctx context.Context, src, dst string, in *Input) error 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
-	srcSt, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if !srcSt.Mode().IsRegular() {
-		return errors.New("not a regular file")
-	}
 	if dstSt, err := os.Lstat(dst); err == nil {
-		// A workspace reused by several jobs may already hold this file.
+		// An existing destination is the durable accepted snapshot. Validate it
+		// against the persisted hash instead of replacing it from today's source.
 		if !dstSt.Mode().IsRegular() {
 			return fmt.Errorf("the workspace already has something else at %s", in.Rel)
 		}
-		a, _, _, err := p.hashes.hashFile(src)
+		b, st, at, err := hashFileExact(dst)
 		if err != nil {
 			return err
 		}
-		b, st, at, err := p.hashes.hashFile(dst)
+		if in.SHA256 != "" {
+			if b != in.SHA256 || st.Size() != in.Size {
+				return fmt.Errorf("the accepted input snapshot at %s has changed", in.Rel)
+			}
+			in.ModTime, in.HashedAt = st.ModTime().UnixNano(), at
+			return nil
+		}
+		a, _, _, err := hashFileExact(src)
 		if err != nil {
 			return err
 		}
@@ -248,14 +339,12 @@ func (p *Provider) place(ctx context.Context, src, dst string, in *Input) error 
 		in.SHA256, in.Size, in.ModTime, in.HashedAt = b, st.Size(), st.ModTime().UnixNano(), at
 		return nil
 	}
-	if err := os.Link(src, dst); err == nil {
-		// Same inode: the source's hash is the snapshot's hash.
-		sum, st, at, err := p.hashes.hashFile(dst)
-		if err != nil {
-			return err
-		}
-		in.SHA256, in.Size, in.ModTime, in.HashedAt = sum, st.Size(), st.ModTime().UnixNano(), at
-		return nil
+	srcSt, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !srcSt.Mode().IsRegular() {
+		return errors.New("not a regular file")
 	}
 	at := time.Now().UnixNano() // dst is new: every byte in it is written after this
 	sum, err := copyHashing(ctx, src, dst)
@@ -266,6 +355,10 @@ func (p *Provider) place(ctx context.Context, src, dst string, in *Input) error 
 	st, err := os.Stat(dst)
 	if err != nil {
 		return err
+	}
+	if in.SHA256 != "" && (sum != in.SHA256 || st.Size() != in.Size) {
+		os.Remove(dst)
+		return fmt.Errorf("input %s changed after its accepted snapshot was recorded", in.Ref)
 	}
 	in.SHA256, in.Size, in.ModTime, in.HashedAt = sum, st.Size(), st.ModTime().UnixNano(), at
 	return nil
@@ -304,10 +397,41 @@ func copyHashing(ctx context.Context, src, dst string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// verifyInputs re-checks, just before launch, that every input still holds
-// the approved bytes. A cheap size+mtime comparison covers the normal case,
-// but only for files last modified well before they were hashed: a write in
-// the same timestamp tick as the hash would leave size and mtime unchanged.
+func hashFileExact(path string) (sum string, st os.FileInfo, hashedAt int64, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	defer f.Close()
+	hashedAt = time.Now().UnixNano()
+	st, err = f.Stat()
+	if err != nil {
+		return "", nil, 0, err
+	}
+	if !st.Mode().IsRegular() {
+		return "", nil, 0, fmt.Errorf("%s is not a regular file", filepath.Base(path))
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", nil, 0, err
+	}
+	finished, err := f.Stat()
+	if err != nil {
+		return "", nil, 0, err
+	}
+	current, err := os.Stat(path)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	if !os.SameFile(st, current) || st.Size() != finished.Size() || !st.ModTime().Equal(finished.ModTime()) || finished.Size() != current.Size() || !finished.ModTime().Equal(current.ModTime()) {
+		return "", nil, 0, fmt.Errorf("%s changed while it was being hashed", filepath.Base(path))
+	}
+	return hex.EncodeToString(h.Sum(nil)), finished, hashedAt, nil
+}
+
+// verifyInputs hashes every accepted workspace snapshot before launch. It does
+// not rely on source caches or mtimes, because snapshots must remain bound to
+// their accepted bytes across restart and restaging.
 func (p *Provider) verifyInputs(j *job) error {
 	for _, in := range j.Inputs {
 		ref, err := files.ParseRef(files.RootWorkspaces + "/" + j.Workspace + "/" + in.Rel)
@@ -318,18 +442,11 @@ func (p *Provider) verifyInputs(j *job) error {
 		if err != nil {
 			return err
 		}
-		st, err := os.Stat(abs)
-		if err != nil {
-			return fmt.Errorf("input %s is gone from the workspace: %w", in.Ref, err)
-		}
-		if st.Size() == in.Size && st.ModTime().UnixNano() == in.ModTime && statClean(in.ModTime, in.HashedAt) {
-			continue
-		}
-		sum, _, _, err := p.hashes.hashFile(abs)
+		sum, st, _, err := hashFileExact(abs)
 		if err != nil {
 			return fmt.Errorf("input %s: %w", in.Ref, err)
 		}
-		if sum != in.SHA256 {
+		if sum != in.SHA256 || st.Size() != in.Size {
 			return fmt.Errorf("input %s changed after it was approved", in.Ref)
 		}
 	}
@@ -549,7 +666,11 @@ func (p *Provider) fitsLocked(j *job, snap Snapshot, perr error) (fatal, wait st
 
 func (p *Provider) startLocked(j *job) {
 	now := time.Now()
-	j.State, j.Started, j.startAt, j.waiting = StateRunning, &now, now, ""
+	previousStarted := j.Started
+	if j.Started == nil {
+		j.Started = &now
+	}
+	j.State, j.startAt, j.waiting = StateRunning, now, ""
 	j.claimed = true
 	for _, g := range j.Claims.GPUs {
 		p.gpuBusy[g] = j.ID
@@ -557,7 +678,21 @@ func (p *Provider) startLocked(j *job) {
 	p.cpusUsed += j.Claims.CPUs
 	p.running++
 	p.holdSleepLocked()
-	p.touchLocked(j)
+	if err := p.touchLocked(j); err != nil {
+		p.running--
+		if p.running == 0 {
+			p.inh.Release()
+		}
+		j.claimed = false
+		for _, g := range j.Claims.GPUs {
+			if p.gpuBusy[g] == j.ID {
+				delete(p.gpuBusy, g)
+			}
+		}
+		p.cpusUsed -= j.Claims.CPUs
+		j.State, j.Started, j.startAt, j.waiting = StateQueued, previousStarted, time.Time{}, "waiting to persist running state: "+err.Error()
+		return
+	}
 	p.wg.Add(1)
 	go p.run(j)
 }
@@ -568,7 +703,37 @@ func (p *Provider) finishLocked(j *job, st State, reason string, exit *int) {
 	if j.State.Terminal() {
 		return
 	}
-	if j.State == StateRunning {
+	prevState, prevReason, prevFinished, prevExit := j.State, j.Reason, j.Finished, j.ExitCode
+	prevPID, prevToken, prevUnit, prevProc := j.PID, j.PIDToken, j.Unit, j.proc
+	now := time.Now()
+	j.State, j.Reason, j.Finished, j.ExitCode = st, reason, &now, exit
+	j.PID, j.PIDToken, j.Unit = 0, "", ""
+	j.proc = nil
+	j.waiting = ""
+	if err := p.touchLocked(j); err != nil {
+		j.State, j.Reason, j.Finished, j.ExitCode = prevState, prevReason, prevFinished, prevExit
+		j.PID, j.PIDToken, j.Unit, j.proc = prevPID, prevToken, prevUnit, prevProc
+		j.waiting = "terminal state commit failed: " + err.Error()
+		if p.closing {
+			return
+		}
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			for p.retryTransition() {
+				p.mu.Lock()
+				if j.State.Terminal() || p.closing {
+					p.mu.Unlock()
+					return
+				}
+				p.finishLocked(j, st, reason, exit)
+				p.mu.Unlock()
+				return
+			}
+		}()
+		return
+	}
+	if prevState == StateRunning {
 		p.running--
 		if p.running == 0 {
 			p.inh.Release()
@@ -583,12 +748,7 @@ func (p *Provider) finishLocked(j *job, st State, reason string, exit *int) {
 		}
 		p.cpusUsed -= j.Claims.CPUs
 	}
-	now := time.Now()
-	j.State, j.Reason, j.Finished, j.ExitCode, j.waiting = st, reason, &now, exit, ""
-	j.PID, j.PIDToken, j.Unit = 0, "", ""
-	j.proc = nil
 	j.cancel()
-	p.touchLocked(j)
 	p.kick()
 }
 
@@ -644,9 +804,23 @@ func (p *Provider) run(j *job) {
 		return
 	}
 
+	runArgs := j.Args
+	if j.Attempt > 0 && j.Recovery != nil {
+		runArgs = j.Recovery.Args
+		if err := p.restoreCheckpoint(j); err != nil {
+			fail("checkpoint restore failed: %v", err)
+			or.Close()
+			er.Close()
+			return
+		}
+	}
+	checkpointEnv := ""
+	if j.Recovery != nil {
+		checkpointEnv = filepath.Join(wsDir, filepath.FromSlash(j.Recovery.Checkpoint))
+	}
 	proc, err := startProcess(launchSpec{
-		ID: j.ID, Path: j.Path, Args: j.Args, Shell: j.Shell, Line: j.Line,
-		Dir: dir, Env: jobEnv(os.Environ(), &j.Job, wsDir), Stdout: ow, Stderr: ew,
+		ID: j.ID, Path: j.Path, Args: runArgs, Shell: j.Shell, Line: j.Line,
+		Dir: dir, Env: jobEnv(os.Environ(), &j.Job, wsDir, checkpointEnv), Stdout: ow, Stderr: ew,
 		MemLimitMB: j.Claims.MemMB, KillGrace: p.opts.KillGrace, NoScope: p.opts.NoScope,
 	})
 	ow.Close()
@@ -666,7 +840,21 @@ func (p *Provider) run(j *job) {
 	p.mu.Lock()
 	j.proc = proc
 	j.PID, j.PIDToken, j.Unit, j.Notes = proc.PID(), proc.Token(), proc.Unit(), proc.Notes()
-	p.touchLocked(j)
+	if err := p.touchLocked(j); err != nil {
+		j.waiting = "process identity could not be persisted; terminating safely: " + err.Error()
+		j.kill = killShutdown
+		p.mu.Unlock()
+		proc.Terminate()
+		exit, _ := proc.Wait()
+		copiers.Wait()
+		p.mu.Lock()
+		j.PID, j.PIDToken, j.Unit = 0, "", ""
+		if j.kill == killShutdown {
+			p.recoverAfterShutdownLocked(j, &exit)
+		}
+		p.mu.Unlock()
+		return
+	}
 	pending := j.kill
 	p.mu.Unlock()
 	if pending != killNone { // cancelled between "running" and the process existing
@@ -675,18 +863,62 @@ func (p *Provider) run(j *job) {
 
 	var timer *time.Timer
 	if j.TimeoutSec > 0 {
-		timer = time.AfterFunc(time.Duration(j.TimeoutSec)*time.Second, func() {
+		remaining := time.Duration(j.TimeoutSec) * time.Second
+		if j.Started != nil {
+			remaining = time.Until(j.Started.Add(time.Duration(j.TimeoutSec) * time.Second))
+		}
+		if remaining < 0 {
+			remaining = 0
+		}
+		p.wg.Add(1)
+		timer = time.AfterFunc(remaining, func() {
+			defer p.wg.Done()
 			p.mu.Lock()
-			if j.kill == killNone {
-				j.kill = killTimeout
+			err := p.commitKillIntentLocked(j, "timeout requested", killTimeout)
+			if err == nil && j.kill == killTimeout {
+				proc.Terminate()
 			}
 			p.mu.Unlock()
-			proc.Terminate()
 		})
 	}
-	exit, werr := proc.Wait()
-	if timer != nil {
-		timer.Stop()
+	type processResult struct {
+		exit int
+		err  error
+	}
+	waited := make(chan processResult, 1)
+	waitDone := make(chan struct{})
+	go func() {
+		defer close(waitDone)
+		exit, err := proc.Wait()
+		waited <- processResult{exit, err}
+	}()
+	var exit int
+	var werr error
+	checkpointTicker := time.NewTicker(2 * time.Second)
+waitProcess:
+	for {
+		select {
+		case r := <-waited:
+			exit, werr = r.exit, r.err
+			<-waitDone
+			break waitProcess
+		case <-checkpointTicker.C:
+			if j.Recovery != nil {
+				p.mu.Lock()
+				if j.State == StateRunning && j.kill == killNone {
+					if err := p.commitCheckpointLocked(j); err != nil {
+						j.waiting = "checkpoint commit failed: " + err.Error()
+					} else {
+						j.waiting = ""
+					}
+				}
+				p.mu.Unlock()
+			}
+		}
+	}
+	checkpointTicker.Stop()
+	if timer != nil && timer.Stop() {
+		p.wg.Done()
 	}
 
 	// The tree is gone, so the pipes close; bound the wait anyway.
@@ -709,7 +941,7 @@ func (p *Provider) run(j *job) {
 	case j.kill == killTimeout:
 		p.finishLocked(j, StateFailed, fmt.Sprintf("timed out after %ds", j.TimeoutSec), &code)
 	case j.kill == killShutdown:
-		p.finishLocked(j, StateInterrupted, "node shut down", &code)
+		p.recoverAfterShutdownLocked(j, &code)
 	case werr != nil:
 		p.finishLocked(j, StateFailed, "wait failed: "+werr.Error(), nil)
 	case exit == 0:
@@ -722,19 +954,87 @@ func (p *Provider) run(j *job) {
 }
 
 // cancelLocked stops j wherever it is in its life.
-func (p *Provider) cancelLocked(j *job) {
+func (p *Provider) cancelLocked(j *job) error {
 	switch j.State {
-	case StateSubmitted, StateAwaitingApproval:
-		j.ticket.Cancel()
+	case StateSubmitted, StateAwaitingApproval, StateQueued:
 		p.finishLocked(j, StateCancelled, "cancelled", nil)
-	case StateQueued:
-		p.finishLocked(j, StateCancelled, "cancelled", nil)
+		if !j.State.Terminal() {
+			return errors.New(j.waiting)
+		}
+		if j.ticket != nil {
+			j.ticket.Cancel()
+		}
 	case StateRunning:
-		if j.kill == killNone {
-			j.kill = killCancel
+		if err := p.commitKillIntentLocked(j, "cancellation requested", killCancel); err != nil {
+			return err
 		}
 		if j.proc != nil {
 			j.proc.Terminate()
 		}
+	}
+	return nil
+}
+
+func (p *Provider) recoverAfterShutdownLocked(j *job, exit *int) {
+	if j.Recovery == nil {
+		p.finishLocked(j, StateInterrupted, "node shut down", exit)
+		return
+	}
+	if err := p.commitCheckpointLocked(j); err != nil {
+		j.waiting = "shutdown checkpoint could not be committed: " + err.Error()
+		p.releaseRunningLocked(j)
+		return
+	}
+	oldState, oldAttempt, oldReason, oldFinished, oldExit := j.State, j.Attempt, j.Reason, j.Finished, j.ExitCode
+	oldPID, oldToken, oldUnit, oldProc, oldKill := j.PID, j.PIDToken, j.Unit, j.proc, j.kill
+	j.Attempt++
+	j.State, j.Reason, j.Finished, j.ExitCode = StateQueued, "", nil, nil
+	j.PID, j.PIDToken, j.Unit, j.proc, j.kill = 0, "", "", nil, killNone
+	if err := p.touchLocked(j); err != nil {
+		j.State, j.Attempt, j.Reason, j.Finished, j.ExitCode = oldState, oldAttempt, oldReason, oldFinished, oldExit
+		j.PID, j.PIDToken, j.Unit, j.proc, j.kill = oldPID, oldToken, oldUnit, oldProc, oldKill
+		j.waiting = "checkpoint saved; resume queue commit failed: " + err.Error()
+		p.releaseRunningLocked(j)
+		return
+	}
+	p.releaseRunningLocked(j)
+	p.kick()
+}
+
+func (p *Provider) releaseRunningLocked(j *job) {
+	if p.running > 0 {
+		p.running--
+		if p.running == 0 {
+			p.inh.Release()
+		}
+	}
+	if j.claimed {
+		j.claimed = false
+		for _, g := range j.Claims.GPUs {
+			if p.gpuBusy[g] == j.ID {
+				delete(p.gpuBusy, g)
+			}
+		}
+		p.cpusUsed -= j.Claims.CPUs
+	}
+}
+func timePtr(t time.Time) *time.Time { return &t }
+
+func (p *Provider) resumeRestoredApproval(j *job) {
+	defer p.wg.Done()
+	ok, err := j.ticket.Wait(p.ctx)
+	if ok {
+		p.commitApproval(j)
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if j.State.Terminal() || p.ctx.Err() != nil {
+		return
+	}
+	if isExpiry(err) {
+		p.finishLocked(j, StateFailed, "approval expired", nil)
+	} else {
+		p.finishLocked(j, StateFailed, "approval denied", nil)
 	}
 }

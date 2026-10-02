@@ -7,6 +7,7 @@ package jobs
 import (
 	"context"
 	"crypto/rand"
+
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,14 +35,16 @@ type Options struct {
 	Resources Resources      // default: live sysinfo
 	Inhibitor SleepInhibitor // default: the OS sleep inhibitor
 
-	MaxConcurrent int           // most jobs running at once (default NumCPU)
-	CPUBudget     int           // CPU threads jobs may claim (default NumCPU)
-	KillGrace     time.Duration // SIGTERM → SIGKILL delay on Linux (default 5s)
-	SettleTime    time.Duration // how long a new job's vram/mem claim is assumed not yet visible in probes (default 15s)
-	PollInterval  time.Duration // queue re-check period while jobs wait (default 3s)
-	HeadBytes     int64         // per-stream log head kept forever (default 4 MiB)
-	SegmentBytes  int64         // per-stream rolling tail segment (default 4 MiB)
-	NoScope       bool          // never use systemd-run scopes (tests)
+	MaxConcurrent   int           // most jobs running at once (default NumCPU)
+	CPUBudget       int           // CPU threads jobs may claim (default NumCPU)
+	KillGrace       time.Duration // SIGTERM → SIGKILL delay on Linux (default 5s)
+	SettleTime      time.Duration // how long a new job's vram/mem claim is assumed not yet visible in probes (default 15s)
+	PollInterval    time.Duration // queue re-check period while jobs wait (default 3s)
+	HeadBytes       int64         // per-stream log head kept forever (default 4 MiB)
+	SegmentBytes    int64         // per-stream rolling tail segment (default 4 MiB)
+	RestoreApproval func(Job) (provider.Ticket, error)
+	WriteState      func(string, []byte, os.FileMode) error
+	NoScope         bool // never wrap in a systemd scope (tests)
 }
 
 type killKind string
@@ -57,18 +60,19 @@ const (
 // Provider.mu.
 type job struct {
 	Job
-	seq      uint64
-	ticket   provider.Ticket
-	ctx      context.Context // ends the approval wait / input snapshot
-	cancel   context.CancelFunc
-	changed  chan struct{} // closed and replaced on every state change
-	ready    chan struct{} // closed once inputs are snapshotted and the request verified
-	proc     process
-	kill     killKind
-	claimed  bool
-	waiting  string // why a queued job is not running yet
-	startAt  time.Time
-	deleting bool // job_delete is removing its files
+	seq         uint64
+	ticket      provider.Ticket
+	ctx         context.Context // ends the approval wait / input snapshot
+	cancel      context.CancelFunc
+	changed     chan struct{} // closed and replaced on every state change
+	ready       chan struct{} // closed once inputs are snapshotted and the request verified
+	proc        process
+	kill        killKind
+	claimed     bool
+	waiting     string // why a queued job is not running yet
+	startAt     time.Time
+	deleting    bool // job_delete is removing its files
+	recoveryReq *request
 }
 
 type pendingKey struct{ owner, exact string }
@@ -100,7 +104,10 @@ type Provider struct {
 	hashes   hashCache
 	sleepErr string // last sleep-inhibitor Hold failure, logged once; "" after a good hold
 
-	closeOnce sync.Once
+	closeOnce   sync.Once
+	submissions map[string]submissionRecord
+	preparing   []*job
+	restoring   []*job
 }
 
 type pendingVal struct {
@@ -158,7 +165,7 @@ func New(ctx context.Context, opts Options) (*Provider, error) {
 		opts: opts, log: opts.Log, paths: opts.Paths, res: opts.Resources, inh: opts.Inhibitor,
 		ctx: pctx, cancel: cancel, wake: make(chan struct{}, 1),
 		jobs: map[string]*job{}, gpuBusy: map[int]string{},
-		pending: map[pendingKey]pendingVal{}, deleting: map[string]bool{},
+		pending: map[pendingKey]pendingVal{}, deleting: map[string]bool{}, submissions: map[string]submissionRecord{},
 	}
 	if err := p.load(); err != nil {
 		cancel()
@@ -166,7 +173,14 @@ func New(ctx context.Context, opts Options) (*Provider, error) {
 	}
 	p.wg.Add(1)
 	go p.loop()
-	// A closed ctx must release running jobs just like Close does.
+	for _, j := range p.preparing {
+		p.wg.Add(1)
+		go p.prepareRestored(j, j.recoveryReq)
+	}
+	for _, j := range p.restoring {
+		p.wg.Add(1)
+		go p.resumeRestoredApproval(j)
+	}
 	go func() {
 		<-pctx.Done()
 		p.Close()
@@ -229,36 +243,147 @@ func (p *Provider) load() error {
 	for _, j := range loaded {
 		p.nextSeq++
 		j.seq = p.nextSeq
-		if !j.State.Terminal() {
-			if j.State == StateRunning {
-				killLeftover(j.PID, j.PIDToken, j.Unit)
-			}
-			now := time.Now()
-			j.State, j.Reason, j.Finished = StateInterrupted, "node restarted", &now
-			j.PID, j.PIDToken, j.Unit = 0, "", ""
-			p.persistLocked(j)
+		if !j.State.Terminal() && !j.Approved && j.State != StateSubmitted && j.State != StateRunning {
+			j.State = StateAwaitingApproval
 		}
-		j.cancel()
+		if j.State == StateAwaitingApproval && !j.Approved && p.opts.RestoreApproval != nil && p.verifyInputs(j) == nil {
+			if ticket, err := p.opts.RestoreApproval(j.Job); err == nil {
+				j.ticket = ticket
+				p.restoring = append(p.restoring, j)
+			} else {
+				j.waiting = "approval could not be restored: " + err.Error()
+			}
+		}
+		if j.State == StateRunning {
+			killLeftover(j.PID, j.PIDToken, j.Unit)
+			if j.Reason == "cancellation requested" || j.Reason == "timeout requested" {
+				if j.Reason == "cancellation requested" {
+					j.State, j.Reason = StateCancelled, "cancelled before restart"
+				} else {
+					j.State, j.Reason = StateFailed, "timed out before restart"
+				}
+				j.Finished = timePtr(time.Now())
+				j.PID, j.PIDToken, j.Unit = 0, "", ""
+				if err := p.persistLocked(j); err != nil {
+					return fmt.Errorf("persist recovered intent for job %s: %w", j.ID, err)
+				}
+			} else {
+				resumable := j.Approved && j.Recovery != nil && j.CheckpointSnapshot != "" && filepath.Base(j.CheckpointSnapshot) == j.CheckpointSnapshot
+				if resumable {
+					snapshot := filepath.Join(p.jobDir(j.ID), j.CheckpointSnapshot)
+					st, err := os.Lstat(snapshot)
+					resumable = err == nil && st.Mode().IsRegular() && st.Size() <= 64<<20
+					if resumable {
+						sum, info, _, err := p.hashes.hashFile(snapshot)
+						resumable = err == nil && info.Mode().IsRegular() && info.Size() <= 64<<20 && sum == j.CheckpointSHA256
+					}
+				}
+				if resumable {
+					j.Attempt++
+					j.State, j.PID, j.PIDToken, j.Unit, j.Reason = StateQueued, 0, "", "", ""
+					if err := p.persistLocked(j); err != nil {
+						return fmt.Errorf("persist checkpoint recovery for job %s: %w", j.ID, err)
+					}
+				} else {
+					j.State = StateInterrupted
+					j.Reason = "node restarted without a valid committed checkpoint"
+					j.Finished = timePtr(time.Now())
+					if err := p.persistLocked(j); err != nil {
+						return fmt.Errorf("persist interrupted job %s: %w", j.ID, err)
+					}
+				}
+			}
+		} else if j.State == StateSubmitted {
+			req, err := p.recoveredRequest(j)
+			if err != nil {
+				j.State = StateInterrupted
+				j.Reason = "submitted job cannot be recovered: " + err.Error()
+				j.Finished = timePtr(time.Now())
+				if err := p.persistLocked(j); err != nil {
+					return fmt.Errorf("persist interrupted submitted job %s: %w", j.ID, err)
+				}
+			} else if !j.Approved && p.opts.RestoreApproval == nil {
+				j.State = StateAwaitingApproval
+				j.waiting = "fresh owner approval is required"
+				if err := p.persistLocked(j); err != nil {
+					return fmt.Errorf("persist awaiting submitted job %s: %w", j.ID, err)
+				}
+			} else if !j.Approved {
+				ticket, err := p.opts.RestoreApproval(j.Job)
+				if err != nil {
+					j.State = StateAwaitingApproval
+					j.waiting = "approval could not be restored: " + err.Error()
+					if err := p.persistLocked(j); err != nil {
+						return fmt.Errorf("persist awaiting submitted job %s: %w", j.ID, err)
+					}
+				} else {
+					j.ticket = ticket
+					j.recoveryReq = req
+					p.preparing = append(p.preparing, j)
+				}
+			} else {
+				j.recoveryReq = req
+				p.preparing = append(p.preparing, j)
+			}
+		} else if j.State == StateAwaitingApproval && !j.Approved && p.opts.RestoreApproval != nil && len(j.Submission) > 0 && p.verifyInputs(j) != nil {
+			req, err := p.recoveredRequest(j)
+			if err != nil {
+				j.State = StateInterrupted
+				j.Reason = "awaiting job cannot be recovered: " + err.Error()
+				j.Finished = timePtr(time.Now())
+				if err := p.persistLocked(j); err != nil {
+					return fmt.Errorf("persist interrupted job %s: %w", j.ID, err)
+				}
+			} else {
+				ticket, err := p.opts.RestoreApproval(j.Job)
+				if err != nil {
+					j.waiting = "approval could not be restored: " + err.Error()
+				} else {
+					j.ticket = ticket
+					j.recoveryReq = req
+					p.preparing = append(p.preparing, j)
+				}
+			}
+		}
+		if j.State == StateQueued && !j.Approved {
+			j.State = StateAwaitingApproval
+			if err := p.persistLocked(j); err != nil {
+				return fmt.Errorf("persist unapproved job %s: %w", j.ID, err)
+			}
+		}
+		if j.State == StateAwaitingApproval && j.ticket == nil && p.opts.RestoreApproval == nil {
+			j.waiting = "fresh owner approval is required"
+		}
 		p.jobs[j.ID] = j
 	}
-	return nil
+	return p.validateSubmissionReceipts(loaded)
 }
-
-func (p *Provider) persistLocked(j *job) {
+func (p *Provider) persistLocked(j *job) error {
 	data, err := json.MarshalIndent(&j.Job, "", "  ")
 	if err == nil {
-		err = state.WriteFileAtomic(filepath.Join(p.jobDir(j.ID), "job.json"), data, 0o600)
+		err = p.writeState(filepath.Join(p.jobDir(j.ID), "job.json"), data, 0o600)
 	}
 	if err != nil {
 		p.log.Error("persist job", "job", j.ID, "error", err)
 	}
+	return err
 }
 
-// touchLocked persists the job and wakes anyone waiting on it.
-func (p *Provider) touchLocked(j *job) {
-	p.persistLocked(j)
-	close(j.changed)
-	j.changed = make(chan struct{})
+func (p *Provider) writeState(path string, data []byte, mode os.FileMode) error {
+	if p.opts.WriteState != nil {
+		return p.opts.WriteState(path, data, mode)
+	}
+	return state.WriteFileAtomic(path, data, mode)
+}
+
+// touchLocked persists the job and wakes waiters only after commit.
+func (p *Provider) touchLocked(j *job) error {
+	err := p.persistLocked(j)
+	if err == nil {
+		close(j.changed)
+		j.changed = make(chan struct{})
+	}
+	return err
 }
 
 func (p *Provider) kick() {
@@ -354,6 +479,9 @@ func (p *Provider) Close() {
 	p.closeOnce.Do(func() {
 		p.mu.Lock()
 		p.closing = true
+		// Make shutdown visible before cancelling tickets: a waiter that wakes
+		// from ticket cancellation must not mistake it for an owner denial.
+		p.cancel()
 		for _, j := range p.jobs {
 			switch j.State {
 			case StateRunning:
@@ -361,15 +489,16 @@ func (p *Provider) Close() {
 				if j.proc != nil {
 					j.proc.Terminate()
 				}
-			case StateSubmitted, StateAwaitingApproval, StateQueued:
+			case StateSubmitted, StateAwaitingApproval:
+				if j.cancel != nil {
+					j.cancel()
+				}
 				if j.ticket != nil {
 					j.ticket.Cancel()
 				}
-				p.finishLocked(j, StateInterrupted, "node shut down", nil)
 			}
 		}
 		p.mu.Unlock()
-		p.cancel()
 		p.wg.Wait()
 		if c, ok := p.inh.(interface{ Close() }); ok {
 			c.Close()

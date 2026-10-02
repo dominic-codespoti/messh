@@ -28,8 +28,27 @@ func TestJobsThroughTheMesh(t *testing.T) {
 	if err := json.Unmarshal([]byte(resultText(res)), &sub); err != nil || sub.JobID == "" {
 		t.Fatalf("submit result %q: %v", resultText(res), err)
 	}
-	if sub.State != "awaiting_approval" {
-		t.Fatalf("state = %s before anyone approved", sub.State)
+	if sub.State != "pending_delivery" {
+		t.Fatalf("initial submit state = %s, want pending_delivery", sub.State)
+	}
+	// Submission is durable before the host has accepted it, so wait on the
+	// owner's real status tool until the asynchronous acceptance is visible.
+	var pending struct {
+		State      string   `json:"state"`
+		Started    *string  `json:"started"`
+		Finished   *string  `json:"finished"`
+		StdoutTail []string `json:"stdout_tail"`
+		StderrTail []string `json:"stderr_tail"`
+	}
+	waitFor(t, "durable job acceptance", func() bool {
+		res = callTool(t, s, "desktop__job_status", map[string]any{"job_id": sub.JobID})
+		if res.IsError || json.Unmarshal([]byte(resultText(res)), &pending) != nil {
+			return false
+		}
+		return pending.State == "awaiting_approval"
+	})
+	if pending.Started != nil || pending.Finished != nil || len(pending.StdoutTail) != 0 || len(pending.StderrTail) != 0 {
+		t.Fatalf("unapproved job has execution data: %+v", pending)
 	}
 
 	waitFor(t, "the prompt", func() bool { return len(desktop.approvals.Pending()) == 1 })

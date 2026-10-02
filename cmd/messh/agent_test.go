@@ -51,24 +51,38 @@ func TestAgentAddCreatesCompactToken(t *testing.T) {
 	if doc["agent"] != "pi" || doc["mode"] != "compact" || doc["created"] != true {
 		t.Fatalf("agent add doc = %v, want agent pi mode compact created true", doc)
 	}
-	if _, ok := doc["omp_mcp_json"]; !ok {
-		t.Fatalf("agent add doc lacks omp_mcp_json: %v", doc)
+	wantKeys := []string{"agent", "mode", "created", "mcp_url", "token_command"}
+	if len(doc) != len(wantKeys) {
+		t.Fatalf("agent add JSON fields = %v, want exactly %v", doc, wantKeys)
 	}
-	if pi, _ := doc["pi_instructions"].(string); pi == "" {
-		t.Fatalf("agent add doc lacks pi_instructions: %v", doc)
+	for _, key := range wantKeys {
+		if _, ok := doc[key]; !ok {
+			t.Errorf("agent add JSON lacks %q: %v", key, doc)
+		}
 	}
-	if cmd, _ := doc["token_command"].(string); cmd == "" {
-		t.Fatalf("agent add doc lacks token_command: %v", doc)
+	if cmd, _ := doc["token_command"].(string); cmd != tokenCommand("pi", true, dir) {
+		t.Fatalf("token command = %q", cmd)
 	}
-	if url, _ := doc["mcp_url"].(string); url == "" {
-		t.Fatalf("agent add doc lacks mcp_url: %v", doc)
+	if doc["mcp_url"] == "" {
+		t.Fatal("agent add JSON lacks MCP URL")
 	}
 	code, out, errOut := agentTestRun(t, dir, "agent", "add", "pi")
 	if code != 0 {
 		t.Fatalf("re-add exit = %d, stderr = %s", code, errOut)
 	}
-	if !strings.Contains(out, "messh skill install --for omp|pi") {
-		t.Fatalf("re-add output lacks the skill hint:\n%s", out)
+	if !strings.Contains(out, "Connect an MCP client") || !strings.Contains(out, "Tools: compact") {
+		t.Fatalf("generic human output lacks connection details:\n%s", out)
+	}
+	if strings.Contains(out, "mcp.json") || strings.Contains(out, "messh.json") || strings.Contains(out, "pi install") {
+		t.Fatalf("generic output contains harness configuration:\n%s", out)
+	}
+	_, tokenDoc, errOut := agentJSON(t, dir, "agent", "token", "pi")
+	if errOut != "" {
+		t.Fatalf("agent token stderr = %s", errOut)
+	}
+	token, _ := tokenDoc["token"].(string)
+	if token == "" || strings.Contains(out, token) || strings.Contains(doc["token_command"].(string), token) {
+		t.Fatalf("agent add output exposed token or token missing")
 	}
 }
 

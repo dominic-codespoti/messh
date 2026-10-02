@@ -460,3 +460,123 @@ func TestRunHistoryCapAndTruncation(t *testing.T) {
 		t.Fatalf("non-JSON result stored as %s", r)
 	}
 }
+
+func TestDueCommitFailureDoesNotAdvanceOrClaim(t *testing.T) {
+	start := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	st, c := newStore(t, start)
+	s := add(t, st, "omp", Spec{In: "1m"})
+	now := s.Next
+	originalPath := st.path
+	failedPath := filepath.Join(t.TempDir(), "not-a-file")
+	if err := os.Mkdir(failedPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st.path = failedPath
+	c.t = now
+	fires, err := st.Due(now)
+	if err == nil || len(fires) != 0 {
+		t.Fatalf("Due after failed commit = %v, %v; want no fire and error", fires, err)
+	}
+	st.path = originalPath
+	got, err := st.Get("omp", s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Next.Equal(now) || got.Running {
+		t.Fatalf("failed Due changed state: next=%s running=%v", got.Next, got.Running)
+	}
+	fires, err = st.Due(now)
+	if err != nil || len(fires) != 1 {
+		t.Fatalf("Due retry = %d fires, %v", len(fires), err)
+	}
+}
+
+func TestJobFireIdentitySurvivesRestart(t *testing.T) {
+	start := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "schedules.json")
+	c := &clock{t: start}
+	st := openStore(t, path, c, time.UTC)
+	s, err := st.Add(Schedule{Agent: "omp", Device: "dev1", Tool: "job_submit", Arguments: json.RawMessage(`{"command":"run","request_id":"caller-key"}`), Spec: Spec{In: "1m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.t = s.Next
+	fires, err := st.Due(c.t)
+	if err != nil || len(fires) != 1 {
+		t.Fatalf("Due = %d fires, %v", len(fires), err)
+	}
+	reopened := openStore(t, path, c, time.UTC)
+	pending := reopened.Pending()
+	if len(pending) != 1 || pending[0].OperationID != fires[0].OperationID {
+		t.Fatalf("recovered fires = %+v; want operation %q", pending, fires[0].OperationID)
+	}
+	if string(pending[0].Arguments) != string(fires[0].Arguments) {
+		t.Fatalf("recovered arguments = %s, want %s", pending[0].Arguments, fires[0].Arguments)
+	}
+}
+
+func TestRestartMarksAmbiguousNonJobFireInterrupted(t *testing.T) {
+	start := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "schedules.json")
+	c := &clock{t: start}
+	st := openStore(t, path, c, time.UTC)
+	s, err := st.Add(Schedule{Agent: "omp", Device: "dev1", Tool: "node_info", Spec: Spec{In: "1m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.t = s.Next
+	if fires, err := st.Due(c.t); err != nil || len(fires) != 1 {
+		t.Fatalf("Due = %d fires, %v", len(fires), err)
+	}
+	reopened := openStore(t, path, c, time.UTC)
+	got, err := reopened.Get("omp", s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Runs) != 1 || !strings.Contains(got.Runs[0].Error, "interrupted") {
+		t.Fatalf("recovered ambiguous call outcome = %+v", got.Runs)
+	}
+	if pending := reopened.Pending(); len(pending) != 0 {
+		t.Fatalf("non-job call was replayed: %+v", pending)
+	}
+}
+
+func TestClaimAndRecordRequireDurableCommit(t *testing.T) {
+	start := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	st, _ := newStore(t, start)
+	s := add(t, st, "omp", Spec{In: "1m"})
+	originalPath := st.path
+	failedPath := filepath.Join(t.TempDir(), "not-a-file")
+	if err := os.Mkdir(failedPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st.path = failedPath
+	if _, err := st.Claim("omp", s.ID); err == nil {
+		t.Fatal("Claim succeeded when its commit failed")
+	}
+	st.path = originalPath
+	view, err := st.Get("omp", s.ID)
+	if err != nil || view.Running {
+		t.Fatalf("failed Claim left running state: %+v, %v", view, err)
+	}
+	fire, err := st.Claim("omp", s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.path = failedPath
+	if err := st.Record(s.ID, Run{Started: start, Finished: start, OK: true}); err == nil {
+		t.Fatal("Record succeeded when its commit failed")
+	}
+	st.path = originalPath
+	view, err = st.Get("omp", s.ID)
+	if err != nil || !view.Running || len(view.Runs) != 0 {
+		t.Fatalf("failed Record lost retryable fire %q: %+v, %v", fire.OperationID, view, err)
+	}
+	if err := st.Record(s.ID, Run{Started: start, Finished: start, OK: true}); err != nil {
+		t.Fatal(err)
+	}
+	view, err = st.Get("omp", s.ID)
+	if err != nil || view.Running || len(view.Runs) != 1 {
+		t.Fatalf("Record retry = %+v, %v", view, err)
+	}
+}

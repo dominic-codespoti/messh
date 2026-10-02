@@ -37,9 +37,10 @@ var scheduleStoreOptions schedule.Options
 // target and calls the tool as the agent that made the schedule, so the
 // target's approval gate and saved rules apply exactly as for a direct call.
 type scheduler struct {
-	n     *Node
-	store *schedule.Store
-	sem   chan struct{}
+	n              *Node
+	store          *schedule.Store
+	sem            chan struct{}
+	pendingStarted bool // recovered durable job fires are handed off once
 	// wake is n.Wake; tests replace it so they do not depend on Wake-on-LAN.
 	wake func(ctx context.Context, deviceID string, wait time.Duration) error
 }
@@ -102,12 +103,21 @@ func (sc *scheduler) run() {
 }
 
 // Claiming a due fire is work too: hold admission until each claimed fire has
-// acquired its own lifetime reference, including time waiting for the semaphore.
+// acquired its own lifetime reference before returning to the caller.
 func (sc *scheduler) runDue() bool {
 	if !sc.n.beginWork() {
 		return false
 	}
 	defer sc.n.endWork()
+	if !sc.pendingStarted {
+		for _, f := range sc.store.Pending() {
+			sc.start(f)
+		}
+		sc.pendingStarted = true
+	}
+	if sc.n.ctx.Err() != nil {
+		return true
+	}
 	fires, err := sc.store.Due(time.Now())
 	if err != nil {
 		sc.n.log.Error("save schedules", "error", err)
@@ -119,36 +129,50 @@ func (sc *scheduler) runDue() bool {
 }
 
 func (sc *scheduler) start(f schedule.Fire) {
-	// All callers retain admission while claiming and handing off the fire.
-	sc.n.maintenance.mu.Lock()
-	sc.n.maintenance.active++
-	sc.n.maintenance.mu.Unlock()
-	sc.n.goRun(func() {
-		defer sc.n.endWork()
+	// Callers retain admission while claiming and handing off this fire. Keep a
+	// lifetime reference before returning so updates also wait for queued fires.
+	n := sc.n
+	n.maintenance.mu.Lock()
+	n.maintenance.active++
+	n.maintenance.mu.Unlock()
+	n.goRun(func() {
+		defer n.endWork()
+		select {
+		case sc.sem <- struct{}{}:
+			defer func() { <-sc.sem }()
+		case <-n.ctx.Done():
+			return
+		}
 		sc.execute(f)
 	})
 }
 
-// execute performs one fire and records it. Arguments are never logged: they
-// may hold prompts or other private text.
+// execute performs one fire and retries outcome persistence without releasing
+// the durable in-flight identity on a failed commit.
 func (sc *scheduler) execute(f schedule.Fire) {
 	n := sc.n
-	run := schedule.Run{Scheduled: f.Scheduled, Missed: f.Missed, Manual: f.Manual}
-	select {
-	case sc.sem <- struct{}{}:
-		defer func() { <-sc.sem }()
-		run.Started = time.Now()
-		run.Woke, run.OK, run.Error, run.Result = sc.perform(f)
-	case <-n.ctx.Done():
-		run.Started = time.Now()
-		run.Error = "not run: the node stopped"
-	}
+	run := schedule.Run{Scheduled: f.Scheduled, Missed: f.Missed, Manual: f.Manual, Started: time.Now()}
+	run.Woke, run.OK, run.Error, run.Result = sc.perform(f)
+	if n.ctx.Err() != nil {
+		return
+	} // restart recovery classifies ambiguous calls; job_submit retries with the same key
 	run.Finished = time.Now()
 	n.log.Info("scheduled call", "schedule", f.ID, "agent", f.Agent, "device", f.DeviceName, "tool", f.Tool,
 		"ok", run.OK, "woke", run.Woke, "missed", run.Missed, "manual", run.Manual,
 		"took", run.Finished.Sub(run.Started).Round(time.Millisecond), "error", oneLineLimit(run.Error, 200))
-	if err := sc.store.Record(f.ID, run); err != nil {
-		n.log.Error("save schedules", "error", err)
+	for {
+		if err := sc.store.Record(f.ID, run); err == nil {
+			return
+		} else {
+			n.log.Error("save schedules", "error", err)
+		}
+		t := time.NewTimer(time.Second)
+		select {
+		case <-n.ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
 	}
 }
 
@@ -170,7 +194,15 @@ func (sc *scheduler) perform(f schedule.Fire) (woke, ok bool, errText string, re
 	// The call is tried even if waking failed: the device may be up anyway.
 	ctx, cancel := context.WithTimeout(n.ctx, scheduleCallTimeout)
 	defer cancel()
-	res, err := n.Call(ctx, f.Device, f.Tool, f.Arguments, f.Agent)
+	args := f.Arguments
+	if f.Tool == "job_submit" {
+		var argErr error
+		args, argErr = scheduledJobArguments(f)
+		if argErr != nil {
+			return woke, false, argErr.Error(), nil
+		}
+	}
+	res, err := n.Call(ctx, f.Device, f.Tool, args, f.Agent)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
 		errText = fmt.Sprintf("%s on %s did not finish within %s", f.Tool, f.DeviceName, scheduleCallTimeout)
@@ -189,6 +221,21 @@ func (sc *scheduler) perform(f schedule.Fire) (woke, ok bool, errText string, re
 		errText = fmt.Sprintf("waking %s failed (%v); then: %s", f.DeviceName, wakeErr, errText)
 	}
 	return woke, ok, errText, result
+}
+
+// scheduledJobArguments replaces a caller-supplied request_id with a stable
+// key for this persisted occurrence, so recurrences remain distinct.
+func scheduledJobArguments(f schedule.Fire) (json.RawMessage, error) {
+	if f.OperationID == "" {
+		return nil, errors.New("scheduled job fire has no durable operation identity")
+	}
+	var args map[string]json.RawMessage
+	if err := json.Unmarshal(f.Arguments, &args); err != nil || args == nil {
+		return nil, errors.New("scheduled job arguments are not a JSON object")
+	}
+	requestID, _ := json.Marshal("schedule-" + f.OperationID)
+	args["request_id"] = requestID
+	return json.Marshal(args)
 }
 
 // resultJSON keeps what an agent needs from a result: its structured content

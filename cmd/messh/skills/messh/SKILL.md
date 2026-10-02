@@ -84,3 +84,25 @@ Network trouble?
 
 `messh doctor --json` — checks node, interfaces, firewall, multicast, peers,
 each ok/warn/fail/unknown with a Fix list. Changes nothing.
+
+## Durable jobs
+
+Use native `job_submit` for background work on a node; remotely the tool is
+`<device>__job_submit`. Prefer `command` plus `args` (not `shell`). Every
+submission needs owner approval. Supply a caller-persisted `request_id` when a
+submit may be retried after a lost response; retry only the same key and exact
+payload. Follow the returned `job_id` with `job_status` / `job_wait`, inspect
+output with `job_logs`, and use `job_list` to find jobs. Cancel only when
+requested (`job_cancel`); delete only finished jobs after retrieving needed
+outputs (`job_delete`). Do not treat
+`pending_delivery` as target acceptance, `cancellation_pending` as confirmed
+cancellation, or `stale` status as live; ask again when the target is reachable.
+Do not blindly replay ambiguous non-job calls.
+
+Jobs in an approved queue resume after node restart; approval not durably
+committed must be obtained again. A running ordinary process is stopped, not
+replayed. Only use `recovery` when the application implements an atomic
+workspace checkpoint and resume argv; it resumes from the last committed
+checkpoint, never arbitrary process memory or exactly-once side effects. See
+[Native durable jobs](https://github.com/dominic-codespoti/messh/blob/main/docs/jobs.md) for the delivery, restart, and
+checkpoint contract.

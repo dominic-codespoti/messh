@@ -99,6 +99,19 @@ func (n *Node) dispatch(ctx context.Context, name string, args json.RawMessage, 
 	if !ok {
 		return provider.ErrorResult("unknown tool %q on %s", name, n.name)
 	}
+	if name == "job_submit" {
+		if lookup, ok := lt.provider.(interface {
+			LookupSubmission(json.RawMessage, provider.Caller) (*mcp.CallToolResult, bool, error)
+		}); ok {
+			res, found, err := lookup.LookupSubmission(args, caller)
+			if err != nil {
+				return provider.ErrorResult("job submission rejected: %v", err)
+			}
+			if found {
+				return res
+			}
+		}
+	}
 	var g *gateState
 	if lt.tool.Class != provider.ClassInfo {
 		var refusal *mcp.CallToolResult
