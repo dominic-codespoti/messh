@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -76,6 +77,11 @@ func newRemoteJobOutbox(n *Node) (*remoteJobOutbox, error) {
 			record := file.Records[i]
 			if record.ID == "" || record.DeviceID == "" {
 				return nil, errors.New("remote job outbox contains invalid record")
+			}
+			if bytes.Equal(bytes.TrimSpace(record.Cached), []byte("null")) {
+				// A nil RawMessage is persisted as JSON null; normalize it to the
+				// absent-cache state expected by all cached-result consumers.
+				record.Cached = nil
 			}
 			o.records[record.ID] = &record
 		}
@@ -460,7 +466,9 @@ func submissionResult(record *remoteJobRecord) *mcp.CallToolResult {
 	}
 	if len(record.Cached) > 0 {
 		var value any
-		if json.Unmarshal(record.Cached, &value) == nil {
+		// A nil RawMessage is persisted as JSON null. It is an absent cache, not
+		// a receipt; after reload RawMessage contains the nonempty bytes "null".
+		if json.Unmarshal(record.Cached, &value) == nil && value != nil {
 			if result, err := provider.JSONResult(value); err == nil {
 				return result
 			}

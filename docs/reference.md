@@ -664,7 +664,7 @@ for the extension layout and API compatibility.
 The [CI workflow](https://github.com/dominic-codespoti/messh/actions/workflows/ci.yml)
 runs on pushes and pull requests:
 
-- Native Go tests and vet on Ubuntu and Windows, using the Go version in `go.mod`.
+- Native Go tests and vet on Ubuntu and Windows, using the Go version in `go.mod`. Windows runs test packages serially (`go test -p 1`) so concurrent package startups do not exhaust the updater's unchanged 10-second PowerShell command bound.
 - pi extension type checking and tests on Node.js 24 with `npm ci`.
 - Workflow validation with actionlint and full Git history secret scanning with Gitleaks.
 - Pure-Go archives for `windows-amd64`, `linux-amd64`, and `linux-arm64`, plus
@@ -682,13 +682,7 @@ build metadata records the source commit and monotonically increasing build
 number used by the updater; clients should not infer freshness from release
 timestamps or tag versions.
 
-Ordinary source builds report version `0.1.0-dev`. Release builds set the
-version from a later `v*` SemVer tag (without its leading `v`) with the linker
-variable `-X messh/internal/node.Version=<version>`. Publishing such a tag runs
-the release workflow and publishes archives and checksums to
-[GitHub Releases](https://github.com/dominic-codespoti/messh/releases).
-The initial repository publication does **not** create a tag or a release;
-do not assume release binaries already exist.
+Ordinary source builds report version `0.1.0-dev`. The release packaging script embeds the verified version, source commit, channel, and build number through `messh/internal/buildinfo` linker variables. Tagged builds derive their version from the verified SemVer tag; trusted main builds derive their identity from the tested commit and workflow run. Published archives and checksums are available from [GitHub Releases](https://github.com/dominic-codespoti/messh/releases).
 
 The `release-assets` CI artifact contains `messh-<version>-windows-amd64.zip`,
 `messh-<version>-linux-amd64.tar.gz`, `messh-<version>-linux-arm64.tar.gz`, and
