@@ -174,6 +174,11 @@ func TestRemoteJobOutboxDefaultsWorkspaceForOfflineSubmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "queued workspace job accepted by target", func() bool { return len(b2.approvals.Pending()) == 1 })
+	// Target acceptance precedes the origin receiving and persisting its receipt.
+	waitFor(t, "target acceptance receipt persisted by origin", func() bool {
+		rec := a2.remoteJobs.find(b2.ID(), "agent", first.JobID)
+		return rec != nil && rec.State == "awaiting_approval"
+	})
 	retried, err := a2.Call(t.Context(), b2.ID(), "job_submit", args, "agent")
 	if err != nil {
 		t.Fatal(err)
