@@ -170,7 +170,7 @@ $rules = @($stored.GetAccessRules($true, $true, [System.Security.Principal.Secur
 	env := []string{"MESSH_UPDATE_INTENT_PATH=" + path, "MESSH_UPDATE_INTENT=" + payload}
 	data, err := command(ctx, powershell, env, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create recovery intent: %v; PowerShell output: %s", err, strings.TrimSpace(string(data)))
 	}
 	var acl struct {
 		Protected  bool

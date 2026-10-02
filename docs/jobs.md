@@ -24,6 +24,8 @@ A submit is accepted only after its durable job record is saved on the target. T
 
 A remote result may say pending_delivery: the origin saved the request, but the target has not yet confirmed receipt. Keep that key and inspect status/list again; do not create a second request. cancellation_pending means the cancellation was saved but the target has not confirmed the process stopped. An unreachable target can yield a cached response marked stale; it is the last known state, not live confirmation. Logs are not cached when the target is unreachable.
 
+After an origin restart, repeating a still-pending submission returns the same job ID, workspace, and `pending_delivery` state until the target receipt is confirmed; an absent cached receipt is not a successful acceptance.
+
 Use the same stable-key principle for scheduled job occurrences: every occurrence needs its own durable operation identity (the scheduler assigns a distinct request id per occurrence). A scheduled job submit can safely be delivered again with that occurrence key. Do not blindly replay an ambiguous non-job external tool call: it may have executed before its response was lost and may not be idempotent.
 
 ## Restart behavior and boundaries

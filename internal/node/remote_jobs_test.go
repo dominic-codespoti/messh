@@ -53,18 +53,41 @@ func TestRemoteJobOutboxPersistsIdentityCancellationAndStaleCache(t *testing.T) 
 	if submitted.JobID != jobs.SubmissionID(n.id.ID, agent, "stable-1") || submitted.State != "pending_delivery" {
 		t.Fatalf("unexpected receipt: %+v", submitted)
 	}
+	restartedOutbox, err := newRemoteJobOutbox(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = restartedOutbox
+	staleList, err := out.staleList(target, agent, errors.New("peer unavailable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		Jobs []struct {
+			JobID string `json:"job_id"`
+			State string `json:"state"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal([]byte(resultText(staleList)), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Jobs) != 1 || listed.Jobs[0].JobID != submitted.JobID || listed.Jobs[0].State != "pending_delivery" {
+		t.Fatalf("stale list lost pending job after reload: %s", resultText(staleList))
+	}
 	same, err := out.submit(context.Background(), target, agent, args)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var repeated struct {
-		JobID string `json:"job_id"`
+		JobID     string `json:"job_id"`
+		State     string `json:"state"`
+		Workspace string `json:"workspace"`
 	}
 	if err := json.Unmarshal([]byte(resultText(same)), &repeated); err != nil {
 		t.Fatal(err)
 	}
-	if repeated.JobID != submitted.JobID {
-		t.Fatalf("retry id %q differs from %q", repeated.JobID, submitted.JobID)
+	if repeated.JobID != submitted.JobID || repeated.State != "pending_delivery" || repeated.Workspace != "ws/"+submitted.JobID {
+		t.Fatalf("reloaded duplicate receipt = %+v; want job %q, pending_delivery, workspace ws/%s", repeated, submitted.JobID, submitted.JobID)
 	}
 	changed := json.RawMessage(`{"command":"echo","args":["different"],"request_id":"stable-1"}`)
 	conflict, err := out.submit(context.Background(), target, agent, changed)
