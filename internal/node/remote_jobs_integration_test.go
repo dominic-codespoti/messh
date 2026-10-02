@@ -174,7 +174,6 @@ func TestRemoteJobOutboxDefaultsWorkspaceForOfflineSubmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "queued workspace job accepted by target", func() bool { return len(b2.approvals.Pending()) == 1 })
-
 	retried, err := a2.Call(t.Context(), b2.ID(), "job_submit", args, "agent")
 	if err != nil {
 		t.Fatal(err)
@@ -184,11 +183,15 @@ func TestRemoteJobOutboxDefaultsWorkspaceForOfflineSubmission(t *testing.T) {
 		State     string `json:"state"`
 		Workspace string `json:"workspace"`
 	}
-	if err := json.Unmarshal([]byte(resultText(retried)), &accepted); err != nil {
-		t.Fatal(err)
+	responseText := resultText(retried)
+	if retried.IsError {
+		t.Fatalf("repeated job_submit returned IsError response: %q", responseText)
+	}
+	if err := json.Unmarshal([]byte(responseText), &accepted); err != nil {
+		t.Fatalf("decode repeated job_submit response %q: %v", responseText, err)
 	}
 	if accepted.JobID != first.JobID || accepted.State != "awaiting_approval" || accepted.Workspace != first.Workspace {
-		t.Fatalf("target acceptance changed submission identity/workspace: queued=%+v accepted=%+v", first, accepted)
+		t.Fatalf("target acceptance changed submission identity/workspace: queued=%+v accepted=%+v response=%q", first, accepted, responseText)
 	}
 }
 

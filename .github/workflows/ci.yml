@@ -99,7 +99,13 @@ jobs:
       - name: Vet Go packages
         run: go vet ./...
       - name: Test Go packages
-        run: go test -count=1 -timeout 5m ./...
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            # Package-level concurrency can starve bounded PowerShell startups.
+            go test -p 1 -count=1 -timeout 5m ./...
+          else
+            go test -count=1 -timeout 5m ./...
+          fi
 
   pi:
     name: Pi extension (Node 24)
