@@ -14,6 +14,10 @@
 # Installed JavaScript dependencies; keep package-lock.json tracked.
 node_modules/
 
+# Release-script interpreter caches.
+__pycache__/
+*.pyc
+
 # Local environment secrets.
 /.env
 /.env.*

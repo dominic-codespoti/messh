@@ -76,7 +76,7 @@ func (n *Node) meshHandler() http.Handler {
 	n.files.mount(mux)
 	n.mountMeshLLM(mux)
 	n.mountWake(mux)
-	return mux
+	return n.admitHTTP(mux)
 }
 
 // peerMCP serves this device's own tools to paired peers. The tool set lives

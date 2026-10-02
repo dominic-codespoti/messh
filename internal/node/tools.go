@@ -91,6 +91,10 @@ func (n *Node) localDefs() []*mcp.Tool {
 // other class passes the approval gate first (see gate in approval.go), so
 // this is the one place where a call can start work on this device.
 func (n *Node) dispatch(ctx context.Context, name string, args json.RawMessage, caller provider.Caller) *mcp.CallToolResult {
+	if !n.beginWork() {
+		return provider.ErrorResult("node is preparing for an update")
+	}
+	defer n.endWork()
 	lt, ok := n.lookupTool(name)
 	if !ok {
 		return provider.ErrorResult("unknown tool %q on %s", name, n.name)

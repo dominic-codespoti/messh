@@ -37,13 +37,14 @@ func (n *Node) localHandler() http.Handler {
 	n.registerLLMAPI(api)
 	n.registerScheduleAPI(api)
 	n.registerWakeAPI(api)
+	n.registerUpdateAPI(api)
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", n.gateway.Handler(n.verifyAgent, n.agentMode))
 	mux.Handle("/v1/", n.requireControl(api))
 	n.mountRespond(mux) // authenticated by a per-request nonce, not the control token
 	n.mountLLM(mux)     // agent token as API key: Authorization: Bearer or x-api-key
-	return mux
+	return n.admitHTTP(mux)
 }
 
 // verifyAgent maps a bearer token to the agent it was issued to.
@@ -81,7 +82,7 @@ func (n *Node) requireControl(next http.Handler) http.Handler {
 
 func (n *Node) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, control.Status{
-		ID: n.id.ID, Name: n.name, Version: Version,
+		ID: n.id.ID, Name: n.name, Version: n.build.Version, Build: n.build,
 		Mesh: n.MeshAddr(), Local: n.LocalAddr(), Started: n.started,
 	})
 }

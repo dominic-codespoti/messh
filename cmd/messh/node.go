@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"messh/internal/buildinfo"
 	"messh/internal/identity"
 	"messh/internal/node"
 )
@@ -77,7 +78,7 @@ func init() {
 				return err
 			}
 			fmt.Fprintf(os.Stderr, "messh %s: %s (id %s)\n  peers connect to  %s\n  agents connect to http://%s/mcp\n  state             %s\n",
-				node.Version, n.Name(), identity.Short(n.ID()), n.MeshAddr(), n.LocalAddr(), paths.Root)
+				buildinfo.Version, n.Name(), identity.Short(n.ID()), n.MeshAddr(), n.LocalAddr(), paths.Root)
 			<-n.Done()
 			return nil
 		},

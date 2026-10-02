@@ -9,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"messh/internal/buildinfo"
 	"messh/internal/provider"
 	"messh/internal/sysinfo"
 )
@@ -17,15 +18,17 @@ const toolName = "node_info"
 
 // Info is the node_info result.
 type Info struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	MesshVersion string `json:"messh_version"`
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	MesshVersion string         `json:"messh_version"`
+	MesshBuild   buildinfo.Info `json:"messh_build"`
 	sysinfo.Info
 }
 
 // Provider reports facts about the device it runs on.
 type Provider struct {
-	DeviceID, DeviceName, Version string
+	DeviceID, DeviceName string
+	Build                buildinfo.Info
 }
 
 func (p *Provider) Name() string { return "nodeinfo" }
@@ -50,7 +53,8 @@ func (p *Provider) Call(ctx context.Context, tool string, _ json.RawMessage, _ p
 	return provider.JSONResult(Info{
 		ID:           p.DeviceID,
 		Name:         p.DeviceName,
-		MesshVersion: p.Version,
+		MesshVersion: p.Build.Version,
+		MesshBuild:   p.Build,
 		Info:         sysinfo.Collect(ctx),
 	})
 }

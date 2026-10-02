@@ -176,6 +176,21 @@ func New(ctx context.Context, opts Options) (*Provider, error) {
 
 func (p *Provider) Name() string { return "jobs" }
 
+// ActiveCount reports nonterminal jobs across all owners. It is deliberately
+// separate from agent-facing job_list, whose visibility is owner-scoped.
+// The node's admission lock prevents submission across its idle check.
+func (p *Provider) ActiveCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	count := 0
+	for _, j := range p.jobs {
+		if !j.State.Terminal() {
+			count++
+		}
+	}
+	return count
+}
+
 func (p *Provider) jobDir(id string) string { return filepath.Join(p.paths.JobsDir(), id) }
 
 func newID() string {

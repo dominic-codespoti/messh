@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -18,7 +19,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  # Let trusted pushes finish publication. A canceled upload remains a draft;
+  # PR and manual checks can still supersede older checks.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   version:
@@ -27,33 +30,18 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - name: Validate release tag or use development version
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Validate build identity
         id: version
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-
-          tag = os.environ.get("RELEASE_TAG", "")
-          version = "0.1.0-dev"
-          if tag:
-              if os.environ["GITHUB_REF"] != "refs/tags/" + tag:
-                  raise SystemExit("Release tag must match the workflow's tag ref")
-              pattern = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
-              match = re.fullmatch(pattern, tag)
-              if not match:
-                  raise SystemExit("Release tag must be v followed by valid SemVer")
-              for identifier in (match.group(4) or "").split("."):
-                  if identifier.isdigit() and len(identifier) > 1 and identifier.startswith("0"):
-                      raise SystemExit("Numeric prerelease identifiers cannot have leading zeros")
-              version = tag[1:]
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"version={version}\n")
-          PY
+        run: python3 scripts/release/identity.py
 
   checks:
     name: Workflow and secret checks
@@ -75,6 +63,8 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
       - name: Scan Git history for secrets
         run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git . --redact --no-banner --log-opts="--all"
+      - name: Test release publication boundaries
+        run: python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
 
   go:
     name: Go (${{ matrix.os }})
@@ -156,33 +146,8 @@ jobs:
           cache-dependency-path: go.sum
       - name: Build and package three supported targets
         env:
-          VERSION: ${{ needs.version.outputs.version }}
-          CGO_ENABLED: '0'
-        shell: bash
-        run: |
-          set -euo pipefail
-          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
-          export SOURCE_DATE_EPOCH
-          mkdir -p dist .release
-          for target in windows-amd64 linux-amd64 linux-arm64; do
-            export GOOS=${target%-*}
-            export GOARCH=${target#*-}
-            package="messh-${VERSION}-${target}"
-            stage=".release/${package}"
-            mkdir -p "$stage"
-            executable=messh
-            if [[ "$GOOS" == windows ]]; then executable=messh.exe; fi
-            go build -trimpath -ldflags="-s -w -X messh/internal/node.Version=${VERSION}" -o "$stage/$executable" ./cmd/messh
-            cp README.md LICENSE "$stage/"
-            git archive HEAD integrations/pi | tar -x -C "$stage"
-            find "$stage" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
-            if [[ "$GOOS" == windows ]]; then
-              (cd .release && zip -X -q -r "../dist/${package}.zip" "$package")
-            else
-              tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -czf "dist/${package}.tar.gz" -C .release "$package"
-            fi
-          done
-          (cd dist && sha256sum -- *.zip *.tar.gz | LC_ALL=C sort -k2 > SHA256SUMS)
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: python3 scripts/release/package.py build
       - name: Upload release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -190,3 +155,33 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  publish-main:
+    name: Publish main build
+    needs: [version, artifacts]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'dominic-codespoti/messh' &&
+      github.workflow_ref == 'dominic-codespoti/messh/.github/workflows/ci.yml@refs/heads/main' &&
+      needs.version.outputs.channel == 'main'
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/release.yml
+
+  publish-tag:
+    name: Publish tagged release
+    needs: [version, artifacts]
+    if: >-
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      github.repository == 'dominic-codespoti/messh' &&
+      github.workflow_ref == format('dominic-codespoti/messh/.github/workflows/ci.yml@{0}', github.ref) &&
+      needs.version.outputs.channel == 'stable'
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/release.yml
+    with:
+      release-tag: ${{ needs.version.outputs.tag }}

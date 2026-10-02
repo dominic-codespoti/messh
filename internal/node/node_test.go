@@ -15,7 +15,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"messh/internal/buildinfo"
 	"messh/internal/control"
+	"messh/internal/provider/nodeinfo"
 	"messh/internal/state"
 )
 
@@ -124,12 +126,24 @@ func TestAgentReachesPairedDeviceTools(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("tool error: %v", res.Content)
 	}
-	var info struct{ ID, Name string }
+	var info nodeinfo.Info
 	if err := json.Unmarshal([]byte(res.Content[0].(*mcp.TextContent).Text), &info); err != nil {
 		t.Fatal(err)
 	}
 	if info.ID != desktop.ID() || info.Name != "desktop" {
 		t.Fatalf("node_info answered by %s/%s, want the desktop", info.Name, info.ID)
+	}
+	wantBuild := buildinfo.Current()
+	if info.MesshVersion != wantBuild.Version || info.MesshBuild != wantBuild {
+		t.Fatalf("paired node_info build = %q / %+v, want %+v", info.MesshVersion, info.MesshBuild, wantBuild)
+	}
+	cl := &control.Client{Base: "http://" + desktop.LocalAddr(), Token: desktop.controlToken, HTTP: &http.Client{Timeout: 10 * time.Second}}
+	var status control.Status
+	if err := cl.Do(t.Context(), http.MethodGet, "/v1/status", nil, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Version != info.MesshVersion || status.Build != info.MesshBuild {
+		t.Fatalf("status build = %q / %+v, differs from node_info %q / %+v", status.Version, status.Build, info.MesshVersion, info.MesshBuild)
 	}
 }
 

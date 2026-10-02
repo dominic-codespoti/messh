@@ -15,17 +15,19 @@ import (
 	"time"
 
 	"messh/internal/approval"
+	"messh/internal/buildinfo"
 	"messh/internal/state"
 )
 
 // Status describes the running node.
 type Status struct {
-	ID      string    `json:"id"`
-	Name    string    `json:"name"`
-	Version string    `json:"version"`
-	Mesh    string    `json:"mesh"`
-	Local   string    `json:"local"`
-	Started time.Time `json:"started"`
+	ID      string         `json:"id"`
+	Name    string         `json:"name"`
+	Version string         `json:"version"`
+	Build   buildinfo.Info `json:"build"`
+	Mesh    string         `json:"mesh"`
+	Local   string         `json:"local"`
+	Started time.Time      `json:"started"`
 }
 
 // PeerStatus is a paired device as seen by this node.

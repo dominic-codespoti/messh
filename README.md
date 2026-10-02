@@ -110,9 +110,9 @@ go build -o messh ./cmd/messh
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o messh-linux-arm64 ./cmd/messh
 ```
 
-For downloadable builds, see [CI and releases](#ci-and-releases): CI artifacts
-are produced from source; GitHub release binaries appear only when a version
-tag is published. Source installation does not depend on an existing release.
+For downloadable builds, see [CI and releases](#ci-and-releases). Successful
+trusted `main` pushes publish immutable main-channel prereleases; SemVer tags
+publish tagged releases. Source installation does not require an existing release.
 
 ### Run a node on every device
 
@@ -154,6 +154,67 @@ loginctl enable-linger "$USER"   # keep it running without a login session
 
 Linger may require administrator permission. This service configuration is for
 headless work; it does not create a desktop session for approval prompts.
+
+### Update in place
+
+```sh
+messh version --json
+messh update --check --json
+messh update --json
+```
+
+`--check` reports `current`, `available`, `update_available`, and `reason`. It is
+read-only: it does not create state, download an executable, lock an installation,
+or stop a node. No published main build and an already-current build are successful
+no-ops. Checks use public GitHub APIs without requiring a GitHub login; network
+failures and GitHub's unauthenticated rate limits are reported as errors.
+
+`messh update` explicitly opts this installation into the **main channel**, including
+when invoked from a source build or tagged release. It selects the greatest
+published main build number, not the most recently edited release or GitHub's
+stable-only `releases/latest` endpoint. A newer installed main build is never
+downgraded. A source build at the same commit is not treated as the published build.
+There are no background upgrades, arbitrary-source flags, or force-update option.
+Only the updater contacts GitHub; mesh traffic remains LAN-only.
+
+Installation downloads and checks the complete release metadata, SHA-256 checksums,
+archive layout, and staged executable's embedded identity **before stopping anything**.
+It replaces the executable at its existing path and retains `<executable>.previous`.
+Pairings, identity keys, agent tokens, approvals/rules, jobs, files, service
+configuration, and firewall paths are preserved. Only the executable is updated;
+the separately installed pi extension is not upgraded by this command.
+
+A running node must use a recognized existing per-user launcher: `messh.service`
+under Linux `systemd --user`, or the `messh` Scheduled Task in the current Windows
+desktop session. The updater validates the launcher, executable, state directory,
+and process ownership; it does not guess how to restart custom/unmanaged processes.
+For an unsupported launcher, finish active work, stop it manually, update while it
+is stopped, and restart it yourself. Updating a stopped installation does not start
+a node. Symlink installations are refused rather than replacing an unexpected target.
+
+The owner-authenticated local maintenance gate refuses **all nonterminal jobs,
+including other agents' jobs and pending approvals**, active requests, model streams,
+transfers, and claimed scheduled work. New work cannot race the idle check and stop.
+Wait for work to finish or cancel your own job, then retry; never delete the lock file
+or kill active work to bypass a refusal. The nonrenewable startup gate lasts two minutes.
+
+Success requires a restarted node with the expected build and unchanged device ID.
+A failed candidate startup or health check triggers bounded recovery through the
+same launcher, restoring the previous executable and verifying the old node before
+reopening admissions. Rollback still returns an error describing the failed update.
+Recovery never rewinds user data. If process/launcher ownership changed or the gate
+expired, recovery fails closed instead of killing an unverified process: retain the
+`.previous` binary, staging directory, `update-startup.json`, and any
+`update-host-recovery.json`, and inspect the reported failure and original launcher.
+An explicit subsequent update can restore an interrupted, unchanged Windows task's
+enabled setting from its owner-only recovery record; `--check` never does so.
+
+**First updater-enabled install:** older binaries do not have these commands or the
+maintenance API. Finish work, stop the old node and verify its actual process exited,
+then install a verified release executable (or build this checkout) at the same path
+and restart the original launcher. Do not remove its state directory. On Windows,
+stopping a PowerShell task wrapper alone may leave its child node running; the child
+must also exit before replacement. Subsequent upgrades use `messh update`.
 
 ### Pair devices
 
@@ -957,26 +1018,41 @@ runs on pushes and pull requests:
 - Pure-Go archives for `windows-amd64`, `linux-amd64`, and `linux-arm64`, plus
   SHA-256 checksums, available as artifacts on a successful workflow run.
 
-All verification jobs must pass before archives are built. Tagged release
-publication verifies the archive checksums and that the tag still points to the
-tested commit. Official Actions are pinned to commit SHAs; only the release
-publication job has repository write permission.
+All verification jobs must pass before archives are built. Only a direct trusted
+push to this repository's `main` branch publishes a main-channel prerelease.
+Pull requests and manual runs do not publish main releases. SemVer `v*` tags
+still publish tagged releases. Official Actions are pinned to commit SHAs; only
+the gated publication jobs have repository write permission.
 
-Ordinary source builds report version `0.1.0-dev`. Release builds set the
-version from a later `v*` SemVer tag (without its leading `v`) with the linker
-variable `-X messh/internal/node.Version=<version>`. Publishing such a tag runs
-the release workflow and publishes archives and checksums to
-[GitHub Releases](https://github.com/dominic-codespoti/messh/releases).
-The initial repository publication does **not** create a tag or a release;
-do not assume release binaries already exist.
+Main releases use tag `main-<build-number>-<12-character-commit>` and version
+`0.1.0-main.<build-number>+<12-character-commit>`. The build number is the CI run
+number. Publication verifies the successful run's provenance, full commit,
+manifest, archive contents, and checksums; it uploads a complete draft before
+making the release visible. Published releases are immutable: a rerun verifies
+and reuses identical assets rather than overwriting them. An older build published
+later does not become the updater's newest build.
 
-The `release-assets` CI artifact contains `messh-<version>-windows-amd64.zip`,
-`messh-<version>-linux-amd64.tar.gz`, `messh-<version>-linux-arm64.tar.gz`, and
-`SHA256SUMS`. Each archive includes the executable, README, MIT license, and
-the pi extension under `integrations/pi/`.
+`messh version --json` reports `{version,commit,channel,build}` without requiring a
+running node. `messh status --json` exposes the same identity as `build`, and
+`node_info` exposes it as `messh_build`. Ordinary source builds use the
+`development` channel and build `0`, even when built from a published commit.
+Release packaging sets `messh/internal/buildinfo.Version`, `.Commit`, `.Channel`,
+and `.Build` through Go's `-X` linker flags; `scripts/release/package.py` implements
+the shared packaging path for main and tagged releases.
 
-When downloading a build, compare its SHA-256 against the accompanying checksum
-file before installation. CI artifacts are development snapshots, not tagged releases.
+The `release-assets` CI artifact and
+[GitHub Releases](https://github.com/dominic-codespoti/messh/releases) contain
+`messh-<version>-windows-amd64.zip`, `messh-<version>-linux-amd64.tar.gz`,
+`messh-<version>-linux-arm64.tar.gz`, `update.json`, and `SHA256SUMS`.
+Each archive includes the executable, README, MIT license, and pi extension under
+`integrations/pi/`. The versioned manifest identifies every platform archive,
+size, SHA-256 digest, expected executable member, and complete build identity.
+`SHA256SUMS` covers the manifest and all three archives.
+
+When downloading manually, verify the archive against the accompanying checksum
+file before installation. The updater uses only this repository's public release
+assets over HTTPS. Checksums detect corruption and mismatched assets; they do
+**not** authenticate a compromised publishing repository or GitHub account.
 
 ## License
 

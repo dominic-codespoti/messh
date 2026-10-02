@@ -85,12 +85,13 @@ func (p Paths) SaveConfig(c Config) error { return writeJSON(p.ConfigFile(), c, 
 
 // RunInfo is written by a running node so CLI commands can find it.
 type RunInfo struct {
-	PID     int       `json:"pid"`
-	ID      string    `json:"id"`
-	Name    string    `json:"name"`
-	Mesh    string    `json:"mesh"`
-	Local   string    `json:"local"`
-	Started time.Time `json:"started"`
+	PID        int       `json:"pid"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Mesh       string    `json:"mesh"`
+	Local      string    `json:"local"`
+	Started    time.Time `json:"started"`
+	Executable string    `json:"executable,omitempty"`
 }
 
 // ErrNodeNotRunning means run.json is missing or its node cannot be reached.

@@ -82,16 +82,13 @@ func (sc *scheduler) run() {
 	timer := time.NewTimer(scheduleRecheck)
 	defer timer.Stop()
 	for {
-		fires, err := sc.store.Due(time.Now())
-		if err != nil {
-			sc.n.log.Error("save schedules", "error", err)
-		}
-		for _, f := range fires {
-			sc.start(f)
-		}
-		wait := time.Hour
-		if next, ok := sc.store.NextWake(); ok {
-			wait = max(min(time.Until(next), wait), 0)
+		admitted := sc.runDue()
+		wait := scheduleRecheck
+		if admitted {
+			wait = time.Hour
+			if next, ok := sc.store.NextWake(); ok {
+				wait = max(min(time.Until(next), wait), 0)
+			}
 		}
 		timer.Reset(wait)
 		select {
@@ -104,8 +101,32 @@ func (sc *scheduler) run() {
 	}
 }
 
+// Claiming a due fire is work too: hold admission until each claimed fire has
+// acquired its own lifetime reference, including time waiting for the semaphore.
+func (sc *scheduler) runDue() bool {
+	if !sc.n.beginWork() {
+		return false
+	}
+	defer sc.n.endWork()
+	fires, err := sc.store.Due(time.Now())
+	if err != nil {
+		sc.n.log.Error("save schedules", "error", err)
+	}
+	for _, f := range fires {
+		sc.start(f)
+	}
+	return true
+}
+
 func (sc *scheduler) start(f schedule.Fire) {
-	sc.n.goRun(func() { sc.execute(f) })
+	// All callers retain admission while claiming and handing off the fire.
+	sc.n.maintenance.mu.Lock()
+	sc.n.maintenance.active++
+	sc.n.maintenance.mu.Unlock()
+	sc.n.goRun(func() {
+		defer sc.n.endWork()
+		sc.execute(f)
+	})
 }
 
 // execute performs one fire and records it. Arguments are never logged: they
@@ -529,6 +550,10 @@ func (sc *scheduler) toolPause(_ context.Context, req *mcp.CallToolRequest) (*mc
 }
 
 func (sc *scheduler) toolRunNow(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if !sc.n.beginWork() {
+		return provider.ErrorResult("node is preparing for an update"), nil
+	}
+	defer sc.n.endWork()
 	var a struct {
 		ID string `json:"id"`
 	}
@@ -626,6 +651,11 @@ func (n *Node) apiSchedulePause(w http.ResponseWriter, r *http.Request) {
 }
 
 func (n *Node) apiScheduleRun(w http.ResponseWriter, r *http.Request) {
+	if !n.beginWork() {
+		writeError(w, http.StatusServiceUnavailable, "node is preparing for an update")
+		return
+	}
+	defer n.endWork()
 	sc := n.schedulerOr503(w)
 	if sc == nil {
 		return

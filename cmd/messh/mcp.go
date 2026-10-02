@@ -14,7 +14,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"messh/internal/node"
+	"messh/internal/buildinfo"
 	"messh/internal/state"
 )
 
@@ -44,7 +44,7 @@ func localSession(ctx context.Context, paths state.Paths) (*mcp.ClientSession, e
 	if err != nil {
 		return nil, err
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "messh-cli", Version: node.Version}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "messh-cli", Version: buildinfo.Version}, nil)
 	return client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:             "http://" + run.Local + "/mcp",
 		HTTPClient:           &http.Client{Transport: bearer{token: tok, next: http.DefaultTransport}},

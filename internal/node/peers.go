@@ -43,7 +43,7 @@ func (c *peerConn) close() {
 func newPeerSet(n *Node) *peerSet {
 	return &peerSet{
 		n:       n,
-		client:  mcp.NewClient(&mcp.Implementation{Name: "messh", Version: Version}, nil),
+		client:  mcp.NewClient(&mcp.Implementation{Name: "messh", Version: n.build.Version}, nil),
 		conns:   map[string]*peerConn{},
 		contact: map[string]time.Time{},
 		busy:    map[string]bool{},

@@ -7,10 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"messh/internal/buildinfo"
 )
 
 // addContractFake registers a temporary command for one test and removes it
@@ -37,6 +40,47 @@ func contractRunErr(t *testing.T, stderr *bytes.Buffer) (kind, hint string) {
 	kind, _ = errObj["kind"].(string)
 	hint, _ = errObj["hint"].(string)
 	return kind, hint
+}
+
+func TestVersionReportsBuildWithoutNodeOrState(t *testing.T) {
+	previousVersion, previousCommit, previousChannel, previousBuild := buildinfo.Version, buildinfo.Commit, buildinfo.Channel, buildinfo.Build
+	t.Cleanup(func() {
+		buildinfo.Version, buildinfo.Commit, buildinfo.Channel, buildinfo.Build = previousVersion, previousCommit, previousChannel, previousBuild
+	})
+	want := buildinfo.Info{
+		Version: "0.1.0-main.9007199254740993+0123456789ab",
+		Commit:  "0123456789abcdef0123456789abcdef01234567",
+		Channel: "main",
+		Build:   9007199254740993,
+	}
+	buildinfo.Version, buildinfo.Commit, buildinfo.Channel, buildinfo.Build = want.Version, want.Commit, want.Channel, "9007199254740993"
+	statePath := filepath.Join(t.TempDir(), "absent-state")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"version", "--json", "--state", statePath}, strings.NewReader(""), false, &stdout, &stderr); code != exitOK {
+		t.Fatalf("version exit = %d: %s", code, stderr.String())
+	}
+	var got buildinfo.Info
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("version JSON does not contain a flat build identity with numeric build: %v", err)
+	}
+	if got != want {
+		t.Fatalf("version identity = %+v, want %+v", got, want)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"describe", "--json", "--state", statePath}, strings.NewReader(""), false, &stdout, &stderr); code != exitOK {
+		t.Fatalf("describe exit = %d: %s", code, stderr.String())
+	}
+	var doc ocDoc
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Info.Version != want.Version {
+		t.Fatalf("describe version = %q, want %q", doc.Info.Version, want.Version)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("metadata commands touched state: %v", err)
+	}
 }
 
 func TestContractUnknownCommand(t *testing.T) {

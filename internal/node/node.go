@@ -23,6 +23,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"messh/internal/approval"
+	"messh/internal/buildinfo"
 	"messh/internal/catalog"
 	"messh/internal/discovery"
 	"messh/internal/gateway"
@@ -32,9 +33,6 @@ import (
 	"messh/internal/roster"
 	"messh/internal/state"
 )
-
-// Version is the messh release this binary reports.
-var Version = "0.1.0-dev"
 
 const (
 	DefaultMeshAddr  = ":7519"
@@ -62,12 +60,15 @@ type Options struct {
 
 // Node is a running messh node.
 type Node struct {
-	opts    Options
-	log     *slog.Logger
-	paths   state.Paths
-	id      *identity.Identity
-	name    string
-	started time.Time
+	opts        Options
+	log         *slog.Logger
+	paths       state.Paths
+	id          *identity.Identity
+	name        string
+	build       buildinfo.Info
+	started     time.Time
+	executable  string
+	maintenance maintenanceState
 
 	roster  *roster.Roster
 	gateway *gateway.Gateway
@@ -150,6 +151,15 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		return nil, err
 	}
 
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("locate running executable: %w", err)
+	}
+	startupUpdate, err := loadStartupUpdate(opts.Paths, id.ID, executable, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("validate startup update: %w", err)
+	}
+
 	if err := requireLoopback(opts.LocalAddr); err != nil {
 		return nil, err
 	}
@@ -170,6 +180,7 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		paths:        opts.Paths,
 		id:           id,
 		name:         name,
+		build:        buildinfo.Current(),
 		started:      time.Now(),
 		roster:       ro,
 		tools:        map[string]localTool{},
@@ -182,18 +193,25 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		ctx:          ctx,
 		cancel:       cancel,
 		done:         make(chan struct{}),
+		executable:   executable,
+	}
+	if startupUpdate != nil {
+		n.maintenance.lease = startupUpdate.Lease
+		n.maintenance.expires = startupUpdate.Expires
+		n.maintenance.paths = opts.Paths
+		n.maintenance.startup = startupUpdate
 	}
 	n.peers = newPeerSet(n)
 	n.wakes = newWakeState() // before the gateway: Nodes() reads sleep state
-	n.peerSrv = mcp.NewServer(&mcp.Implementation{Name: "messh-node", Version: Version}, &mcp.ServerOptions{
+	n.peerSrv = mcp.NewServer(&mcp.Implementation{Name: "messh-node", Version: n.build.Version}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 	})
-	n.register(&nodeinfo.Provider{DeviceID: id.ID, DeviceName: name, Version: Version})
+	n.register(&nodeinfo.Provider{DeviceID: id.ID, DeviceName: name, Build: n.build})
 	n.startJobs()
 	n.startCatalog()
 	n.startBrowser()
 	n.rebuildTools()
-	n.gateway = gateway.New(n, Version, log.With("component", "gateway"))
+	n.gateway = gateway.New(n, n.build.Version, log.With("component", "gateway"))
 	ro.OnChange(n.gateway.Sync)
 	if err := n.startFiles(); err != nil {
 		cancel()
@@ -229,6 +247,7 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 	if err := n.paths.SaveRunInfo(state.RunInfo{
 		PID: os.Getpid(), ID: id.ID, Name: name,
 		Mesh: n.meshLn.Addr().String(), Local: n.localLn.Addr().String(), Started: n.started,
+		Executable: n.executable,
 	}); err != nil {
 		cancel()
 		n.shutdown()
@@ -314,6 +333,10 @@ func (n *Node) Nodes() []gateway.Node {
 
 // Call implements gateway.Backend.
 func (n *Node) Call(ctx context.Context, deviceID, tool string, args json.RawMessage, agent string) (*mcp.CallToolResult, error) {
+	if !n.beginWork() {
+		return provider.ErrorResult("node is preparing for an update"), nil
+	}
+	defer n.endWork()
 	if deviceID == n.id.ID {
 		return n.dispatch(ctx, tool, args, provider.Caller{DeviceID: n.id.ID, DeviceName: n.name, Agent: agent}), nil
 	}

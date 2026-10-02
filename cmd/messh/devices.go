@@ -51,7 +51,7 @@ func init() {
 	add(&Command{
 		Name:    "status",
 		Summary: "show the running node's status",
-		Output:  `{"id", "name", "version", "mesh", "local", "started"} (started is RFC 3339)`,
+		Output:  `{id, name, version, build: {version, commit, channel, build}, mesh, local, started} (started is RFC 3339; build.build is an unsigned integer)`,
 		Examples: []string{
 			"messh status",
 			"messh status --json",

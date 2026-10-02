@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"messh/internal/node"
+	"messh/internal/buildinfo"
 )
 
 func init() {
@@ -35,10 +35,11 @@ func init() {
 	add(&Command{
 		Name:     "version",
 		Summary:  "print the messh version",
-		Output:   `{"version": "0.1.0"}`,
+		Output:   `{version, commit, channel, build} (build is an unsigned integer)`,
 		Examples: []string{"messh version --json"},
 		Run: func(c *Context) error {
-			return c.Emit(map[string]string{"version": node.Version}, func(w io.Writer) { fmt.Fprintln(w, "messh", node.Version) })
+			info := buildinfo.Current()
+			return c.Emit(info, func(w io.Writer) { fmt.Fprintln(w, "messh", info.Version) })
 		},
 	})
 }
@@ -130,7 +131,7 @@ func describeDoc(path string) ocDoc {
 	}
 	return ocDoc{
 		OpenCLI:     "0.1",
-		Info:        ocInfo{Title: "messh", Summary: "connect the devices on a LAN so agents on one can use the others", Version: node.Version},
+		Info:        ocInfo{Title: "messh", Summary: "connect the devices on a LAN so agents on one can use the others", Version: buildinfo.Version},
 		Conventions: ocConventions{GroupOptions: false, OptionArgumentSeparator: " "},
 		Command:     root,
 	}
