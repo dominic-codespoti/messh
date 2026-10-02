@@ -664,7 +664,7 @@ for the extension layout and API compatibility.
 The [CI workflow](https://github.com/dominic-codespoti/messh/actions/workflows/ci.yml)
 runs on pushes and pull requests:
 
-- Native Go tests and vet on Ubuntu and Windows, using the Go version in `go.mod`. Windows runs test packages serially (`go test -p 1`) so concurrent package startups do not exhaust the updater's unchanged 10-second PowerShell command bound.
+- Native Go tests and vet on Ubuntu and Windows, using the Go version in `go.mod`. Windows runs test packages serially (`go test -p 1`) to reduce cold PowerShell startup contention. The ACL/exclusive-create fixture uses its existing 20-second test context for creation and security inspection; production launcher commands retain their separate 10-second bound.
 - pi extension type checking and tests on Node.js 24 with `npm ci`.
 - Workflow validation with actionlint and full Git history secret scanning with Gitleaks.
 - Pure-Go archives for `windows-amd64`, `linux-amd64`, and `linux-arm64`, plus
