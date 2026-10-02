@@ -919,7 +919,8 @@ func TestToolSetAndClasses(t *testing.T) {
 	want := map[string]provider.Class{
 		"job_submit": provider.ClassExec, "job_status": provider.ClassInfo, "job_wait": provider.ClassInfo,
 		"job_logs": provider.ClassInfo, "job_cancel": provider.ClassInfo, "job_list": provider.ClassInfo,
-		"job_delete": provider.ClassInfo, "job_resources": provider.ClassInfo,
+		"job_delete": provider.ClassInfo, "job_resources": provider.ClassInfo, "job_events": provider.ClassInfo,
+		"recipe_list": provider.ClassInfo, "recipe_get": provider.ClassInfo,
 	}
 	got := h.p.Tools()
 	if len(got) != len(want) {

@@ -105,7 +105,7 @@ func (n *Node) dispatch(ctx context.Context, name string, args json.RawMessage, 
 		}); ok {
 			res, found, err := lookup.LookupSubmission(args, caller)
 			if err != nil {
-				return provider.ErrorResult("job submission rejected: %v", err)
+				return provider.ErrorFrom(err, "job submission rejected")
 			}
 			if found {
 				return res
@@ -126,7 +126,7 @@ func (n *Node) dispatch(ctx context.Context, name string, args json.RawMessage, 
 		"took", took.Round(time.Millisecond), "error", err)
 	g.finish(res, err, took)
 	if err != nil {
-		return provider.ErrorResult("%s failed on %s: %v", name, n.name, err)
+		return provider.ErrorFrom(err, name+" failed on "+n.name)
 	}
 	return res
 }

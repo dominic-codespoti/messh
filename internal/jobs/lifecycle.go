@@ -19,31 +19,38 @@ import (
 
 	"messh/internal/files"
 	"messh/internal/provider"
+	"messh/internal/recipes"
 )
 
 type submitResult struct {
-	JobID     string `json:"job_id"`
-	State     State  `json:"state"`
-	Workspace string `json:"workspace"`
-	Message   string `json:"message"`
+	JobID     string    `json:"job_id"`
+	State     State     `json:"state"`
+	Workspace string    `json:"workspace"`
+	Message   string    `json:"message"`
+	Submitted time.Time `json:"submitted"`
 }
 
 // callSubmit records the job and returns at once; everything slow (input
 // snapshots, the human's decision, the queue) happens in the background.
-func (p *Provider) callSubmit(ctx context.Context, args json.RawMessage, caller provider.Caller) (*mcp.CallToolResult, error) {
-	ticket, ok := provider.TicketFrom(ctx)
-	if !ok {
-		return nil, errors.New("job_submit must be approved by the device owner before it runs")
-	}
+func (p *Provider) callSubmit(ctx context.Context, args json.RawMessage, caller provider.Caller, req *request, recipe *recipes.Recipe, params json.RawMessage) (*mcp.CallToolResult, error) {
 	if res, found, err := p.LookupSubmission(args, caller); err != nil {
 		return nil, err
 	} else if found {
 		return res, nil
 	}
-	req, err := p.parseSubmit(args)
-	if err != nil {
-		return nil, err
+	ticket, ok := provider.TicketFrom(ctx)
+	if !ok {
+		return nil, errors.New("job_submit must be approved by the device owner before it runs")
 	}
+	if req == nil {
+		var err error
+		req, recipe, params, err = p.parseOptionalRecipeSubmit(args)
+		if err != nil {
+			return nil, err
+		}
+	}
+	_ = recipe
+	_ = params
 	submissionHash, err := SubmissionHash(args)
 	if err != nil {
 		return nil, err
@@ -70,7 +77,7 @@ func (p *Provider) callSubmit(ctx context.Context, args json.RawMessage, caller 
 			p.mu.Unlock()
 			return nil, errors.New(reason)
 		}
-		res, err := provider.JSONResult(submitResult{JobID: existing.ID, State: existing.State, Workspace: files.RootWorkspaces + "/" + existing.Workspace, Message: "Previously accepted submission; inspect with job_status."})
+		res, err := provider.JSONResult(submitResult{JobID: existing.ID, State: existing.State, Workspace: files.RootWorkspaces + "/" + existing.Workspace, Message: "Previously accepted submission; inspect with job_status.", Submitted: existing.Submitted})
 		p.mu.Unlock()
 		return res, err
 	}
@@ -103,6 +110,8 @@ func (p *Provider) callSubmit(ctx context.Context, args json.RawMessage, caller 
 			Path: req.Path, Args: req.Args, Shell: req.Shell, Line: req.Line,
 			Workspace: ws, Cwd: req.Cwd, Env: req.Env, Claims: req.Claims, TimeoutSec: req.TimeoutSec,
 			RequestID: req.RequestID, SubmissionHash: submissionHash, Recovery: recoveryFromRequest(req.Recovery),
+			RecipeID: req.RecipeID, RecipeVersion: req.RecipeVersion, RecipeDigest: req.RecipeDigest,
+			RecipeSnapshot: append(json.RawMessage(nil), req.RecipeSnapshot...), RecipeParameters: append(json.RawMessage(nil), req.RecipeParameters...),
 			Submission: append(json.RawMessage(nil), args...), Inputs: append([]Input(nil), req.Inputs...), Exact: req.exact(),
 		},
 		seq: p.nextSeq, ticket: ticket, changed: make(chan struct{}), ready: make(chan struct{}),
@@ -110,7 +119,7 @@ func (p *Provider) callSubmit(ctx context.Context, args json.RawMessage, caller 
 	// The approval wait must outlive this request, so it hangs off the provider.
 	j.ctx, j.cancel = context.WithCancel(p.ctx)
 	p.jobs[id] = j
-	if err := p.persistLocked(j); err != nil {
+	if err := p.appendEventLocked(j, "submitted"); err != nil {
 		delete(p.jobs, id)
 		if removeErr := os.Remove(filepath.Join(p.jobDir(id), "job.json")); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			p.log.Error("rollback incomplete accepted job", "job", id, "error", removeErr)
@@ -150,7 +159,7 @@ func (p *Provider) callSubmit(ctx context.Context, args json.RawMessage, caller 
 	if st.Terminal() {
 		msg = "The job could not start; see job_status for the reason."
 	}
-	return provider.JSONResult(submitResult{JobID: id, State: st, Workspace: files.RootWorkspaces + "/" + ws, Message: msg})
+	return provider.JSONResult(submitResult{JobID: id, State: st, Workspace: files.RootWorkspaces + "/" + ws, Message: msg, Submitted: j.Submitted})
 }
 
 // prepare snapshots inputs, proves the request still equals what was shown

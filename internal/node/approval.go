@@ -16,6 +16,7 @@ import (
 
 	"messh/internal/approval"
 	"messh/internal/control"
+	"messh/internal/grants"
 	"messh/internal/provider"
 )
 
@@ -207,7 +208,14 @@ func (n *Node) gate(ctx context.Context, lt localTool, name string, args json.Ra
 	}
 	ap, err := gated.Approval(ctx, name, args, caller)
 	if err != nil {
-		return ctx, nil, provider.ErrorResult("%s refused on %s: %v", name, n.name, err)
+		return ctx, nil, provider.ErrorFrom(err, name+" refused on "+n.name)
+	}
+	// A grant delegates this admission, not unchecked execution: the provider
+	// above still prepares the exact request and verifies it again at launch.
+	decision := n.grants.Decide(grants.Subject{DeviceID: caller.DeviceID, Agent: caller.Agent},
+		grants.Request{Kind: "tool", Tool: name, ArgsHash: ap.Exact})
+	if decision.Allowed {
+		ap.Auto = "capability grant " + decision.GrantID
 	}
 	g := &gateState{n: n, req: approval.Request{Caller: caller, Tool: name, Class: lt.tool.Class, Approval: ap}}
 	if ap.Deferred {

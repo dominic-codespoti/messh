@@ -59,6 +59,7 @@ func (p Paths) RunFile() string          { return filepath.Join(p.Root, "run.jso
 func (p Paths) ControlTokenFile() string { return filepath.Join(p.Root, "control.token") }
 func (p Paths) AgentsDir() string        { return filepath.Join(p.Root, "agents") }
 func (p Paths) RulesFile() string        { return filepath.Join(p.Root, "rules.json") }
+func (p Paths) GrantsFile() string       { return filepath.Join(p.Root, "grants.json") }
 func (p Paths) AuditFile() string        { return filepath.Join(p.Root, "audit.jsonl") }
 func (p Paths) JobsDir() string          { return filepath.Join(p.Root, "jobs") }
 func (p Paths) ServicesFile() string     { return filepath.Join(p.Root, "services.json") }

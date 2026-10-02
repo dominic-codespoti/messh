@@ -30,6 +30,7 @@ const (
 	HeaderOverwrite = "X-Messh-Overwrite" // "1" replaces an existing file
 	HeaderExec      = "X-Messh-Exec"      // "1" marks the file executable
 	HeaderMtime     = "X-Messh-Mtime"     // modification time, unix nanoseconds
+	HeaderAgent     = "X-Messh-Agent"
 
 	copyBufSize = 256 << 10
 )
@@ -50,6 +51,7 @@ var errCodes = []struct {
 	{ErrExists, "exists", http.StatusConflict},
 	{ErrIsDirectory, "is_directory", http.StatusConflict},
 	{ErrNotDirectory, "not_directory", http.StatusConflict},
+	{ErrCapabilityDenied, "capability_denied", http.StatusForbidden},
 	{ErrReadOnly, "read_only", http.StatusForbidden},
 	{ErrRoot, "root", http.StatusForbidden},
 	{ErrNotRegular, "not_regular", http.StatusUnprocessableEntity},

@@ -48,8 +48,7 @@ Normally the extension executes `messh agent token NAME --bearer [--state DIR]` 
 
 Start pi and run `/messh` to connect/refresh tools, then call `mesh_nodes`, find a paired device, query `mesh_tools` for `node_info`, and invoke `mesh_call` with the actual device name and tool. This is a read-only check. In full mode, a node tool may also be called directly by its listed `<device>__<tool>` name.
 
-The extension maps MCP tools to pi tools. Text and images are retained; binary/audio resources are represented by a note. Oversized text is saved under the temporary `messh-pi` directory. Calls allow up to 330 seconds (`job_wait` up to 300); Escape aborts the HTTP request. `/messh` and `messh_refresh` reload the tool catalogue. If the node is unavailable at startup, the extension exposes a status/retry tool. A 401 response refreshes the token and retries once.
-
+This native adapter exposes tools returned by the node, including capability checks, recipe discovery/submission, and job events when advertised. It deliberately does not negotiate the MCP `io.modelcontextprotocol/tasks` extension; use native `job_status`/`job_wait` instead. Owner grant/recipe mutations remain owner-only. See the [capability and recipe workflow](../../docs/jobs.md#capability-discovery-checks-and-owner-controlled-grants) and event cursor guidance there.
 ## Troubleshooting
 
 - **Connection refused:** start the local node; check `messh status` and set `MESSH_URL` if it reports a non-default endpoint.

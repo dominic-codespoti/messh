@@ -17,6 +17,7 @@ const (
 	toolList      = "job_list"
 	toolDelete    = "job_delete"
 	toolResources = "job_resources"
+	toolEvents    = "job_events"
 
 	maxWaitSeconds = 300
 )
@@ -30,6 +31,7 @@ var (
   "type":"object",
   "properties":{
     "request_id":{"type":"string","minLength":1,"maxLength":128},
+    "recipe":{"type":"object","properties":{"name":{"type":"string"},"version":{"type":"string"},"digest":{"type":"string"},"parameters":{"type":"object"}},"required":["name","version","digest"],"additionalProperties":false},
     "recovery":{"type":"object","properties":{"checkpoint":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["checkpoint","args"],"additionalProperties":false},
     "command":{"type":"string","description":"Program to run, resolved on this device: a bare name found on PATH or an absolute path."},
     "args":{"type":"array","items":{"type":"string"},"description":"Arguments, one array element each; no quoting needed. Leave empty with shell:true."},
@@ -47,7 +49,7 @@ var (
     "timeout_seconds":{"type":"integer","minimum":0,"description":"Kill the job (and everything it started) after this many seconds. 0 or omitted: no limit."},
     "label":{"type":"string","description":"Short note for you; shown in job_list."}
   },
-  "required":["command"],
+  "anyOf":[{"required":["command"]},{"required":["recipe"]}],
   "additionalProperties":false
 }`)
 
@@ -100,7 +102,7 @@ func readOnly(title string) *mcp.ToolAnnotations {
 func (p *Provider) Tools() []provider.Tool {
 	t := true
 	f := false
-	return []provider.Tool{
+	tools := []provider.Tool{
 		{Class: provider.ClassExec, Def: &mcp.Tool{
 			Name: toolSubmit,
 			Description: "Run a program on this device as a background job (e.g. a GPU job on the desktop). " +
@@ -160,5 +162,12 @@ func (p *Provider) Tools() []provider.Tool {
 			InputSchema: emptySchema,
 			Annotations: readOnly("Job resources"),
 		}},
+		{Class: provider.ClassInfo, Def: &mcp.Tool{
+			Name:        toolEvents,
+			Description: "Read your durable owner-filtered job lifecycle events with an opaque resume cursor. Cursor expiry includes a current owner snapshot; job_status remains authoritative.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"cursor":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":128},"wait_ms":{"type":"integer","minimum":0,"maximum":30000}},"additionalProperties":false}`),
+			Annotations: readOnly("Job events"),
+		}},
 	}
+	return append(tools, p.RecipeTools()...)
 }

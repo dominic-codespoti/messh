@@ -27,7 +27,9 @@ import (
 	"messh/internal/catalog"
 	"messh/internal/discovery"
 	"messh/internal/gateway"
+	"messh/internal/grants"
 	"messh/internal/identity"
+	"messh/internal/jobs"
 	"messh/internal/provider"
 	"messh/internal/provider/nodeinfo"
 	"messh/internal/roster"
@@ -76,6 +78,8 @@ type Node struct {
 	peers      *peerSet
 	remoteJobs *remoteJobOutbox
 	files      *fileService
+	grants     *grants.Store
+	jobs       *jobs.Provider
 	browser    browserControl // the browser provider's control surface (stop, status)
 
 	catalog *catalog.Provider // the service catalogue, nil if it failed to start; see llm.go
@@ -208,6 +212,13 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 	})
 	n.register(&nodeinfo.Provider{DeviceID: id.ID, DeviceName: name, Build: n.build})
+	if err := n.startGrants(); err != nil {
+		cancel()
+		meshLn.Close()
+		localLn.Close()
+		approvals.Close()
+		return nil, fmt.Errorf("load capability grants: %w", err)
+	}
 	n.remoteJobs, err = newRemoteJobOutbox(n)
 	if err != nil {
 		cancel()

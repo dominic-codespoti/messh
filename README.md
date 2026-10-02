@@ -32,8 +32,7 @@ messh node --name desktop    # device A
 messh node --name worker     # device B
 ```
 
-Peer traffic uses TCP/UDP 7519; local agents use `http://127.0.0.1:7520/mcp`. Allow peer traffic only on networks you trust. Check connectivity with `messh doctor`; see [network setup](docs/reference.md#network-setup). For downloadable builds and the in-place updater, see [CI, releases, and updates](docs/reference.md#ci-and-releases).
-
+Agents discover remote tool schemas before calls. File access is deny-by-default: pairing alone does not grant files, and there is no blanket paired-peer migration. Owners may add finite path/action-scoped grants; see [capabilities and recipes](docs/jobs.md#capability-discovery-checks-and-owner-controlled-grants).
 ### Pair devices
 
 Pairing is two-sided: a person compares a short code on both nodes. On device A, open the acceptance window:
@@ -73,6 +72,14 @@ Verify with a read-only call: discover devices with `mesh_nodes`, find tools wit
 ## Durable jobs
 
 Accepted jobs are persisted with stable IDs and recover after node restart. A running command is not automatically replayed after its node stops. Applications may opt into checkpoints and resume their own work; this cannot roll back external side effects or guarantee exactly-once execution. Read the [job durability contract](docs/jobs.md).
+
+## Agent-first capabilities
+
+- **Scoped grants:** agents discover their capabilities and check an exact request; owners issue finite, revocable tool or path/action grants. File access is denied by default, including on paired peers.
+- **Typed job recipes:** discover an owner-published name/version/digest and parameter schema, then submit it through the native job API. Accepted snapshots and retry keys remain stable after disable or restart.
+- **Durable events:** resume owner-filtered lifecycle events with opaque cursors, including origin delivery observations while a target is offline. Status remains authoritative; logs use separate byte offsets.
+
+Use discovered MCP schemas rather than guessing calls. See the [agent capability and job workflow](docs/jobs.md#capability-discovery-checks-and-owner-controlled-grants); owner policy mutation is never an automatic agent action.
 
 ## Architecture and reference
 

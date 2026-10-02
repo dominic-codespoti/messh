@@ -32,8 +32,7 @@ In omp's configuration, the leading `!` runs the command and uses its output as 
 
 After reloading omp, use `mesh_nodes`, then `mesh_tools` and `mesh_call` for a read-only smoke call such as remote `node_info`. Do not submit a job merely to verify the connection.
 
-For the CLI skill, select the adapter explicitly: `messh skill install --for omp`. For pairing, platform requirements, security limits, and jobs, see the [project README](../../README.md), [reference](../../docs/reference.md), and [job durability contract](../../docs/jobs.md). Approval is human consent, not an OS sandbox.
-
+For capability checks, recipes, and event cursors, use the generic core tools discovered through `mesh_tools`/`mesh_call`; messh core has no implicit omp dependency. This guide does not claim omp Tasks support: advertise MCP Tasks only if this client’s per-request extension negotiation is observed. Native `job_status` remains authoritative. Owner grant and recipe mutations require explicit owner action. See the [capability/job guide](../../docs/jobs.md#capability-discovery-checks-and-owner-controlled-grants). Approval is human consent, not an OS sandbox.
 ## Use a remote model
 
 On the model-host device, register its OpenAI-compatible service:

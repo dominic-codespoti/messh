@@ -16,7 +16,8 @@ agent / MCP client -- loopback HTTP + agent token --> local node
 
 - **Providers** describe and invoke local tools/services through a common provider contract. The node composes providers into a catalogue for local and remote discovery.
 - **Node** owns peer identity/pairing, transport, MCP exposure, routing, local approvals, resource information, and the local execution boundary. The target node—not the caller—enforces its local policy.
-- **Jobs** provide durable accepted requests, lifecycle state, logs, and optional application checkpoint/resume. See the [durability contract](jobs.md); this is not transparent process-memory recovery.
+- **Jobs** provide durable accepted requests, lifecycle state, logs, and optional application checkpoint/resume. They also persist owner-scoped lifecycle events and deletion tombstones; the origin outbox persists its own delivery observations. Origin and target sequences have no cross-source total order. See the [durability contract](jobs.md); this is not transparent process-memory recovery.
+- **Grants and recipes** provide narrow, expiring owner-delegated admission and immutable typed job definitions. Recipes resolve into the native job runner, not a second execution environment.
 - **Schedule** stores future/repeating tool-call occurrences and dispatches pending work through the node's normal call policy. It is not a separate job execution environment.
 - **Gateway** is the agent-facing MCP boundary: it exposes the local endpoint and routes authenticated tool requests into node functionality.
 - **CLI** and explicit harness adapters live under `cmd/messh`; their responsibilities are presentation and configuration mapping, not duplicate mesh/job implementations. Optional native client integrations live under `integrations/`. See the [omp guide](../integrations/omp/README.md) and [pi guide](../integrations/pi/README.md).

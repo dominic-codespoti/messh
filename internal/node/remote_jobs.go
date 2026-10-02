@@ -42,20 +42,26 @@ type remoteJobRecord struct {
 	Attempted        bool
 	NextTry          time.Time
 	Updated          time.Time
+	OriginSubmitted  time.Time
+	OriginEvents     []jobs.Event
+	OriginEventFloor uint64
+	OriginEventState string
 }
 
 type remoteJobFile struct {
-	Records []remoteJobRecord
+	Records                 []remoteJobRecord
+	NextOriginEventSequence uint64
 }
 
 type remoteJobOutbox struct {
-	mu       sync.Mutex
-	path     string
-	records  map[string]*remoteJobRecord
-	busy     map[string]bool
-	wake     chan struct{}
-	n        *Node
-	callPeer func(context.Context, string, string, json.RawMessage, string) (*mcp.CallToolResult, error)
+	mu                      sync.Mutex
+	path                    string
+	records                 map[string]*remoteJobRecord
+	busy                    map[string]bool
+	wake                    chan struct{}
+	n                       *Node
+	callPeer                func(context.Context, string, string, json.RawMessage, string) (*mcp.CallToolResult, error)
+	nextOriginEventSequence uint64
 }
 
 func newRemoteJobOutbox(n *Node) (*remoteJobOutbox, error) {
@@ -73,10 +79,23 @@ func newRemoteJobOutbox(n *Node) (*remoteJobOutbox, error) {
 		if err := json.Unmarshal(data, &file); err != nil {
 			return nil, fmt.Errorf("load remote job outbox: %w", err)
 		}
+		o.nextOriginEventSequence = file.NextOriginEventSequence
+		legacyTimestamps := false
 		for i := range file.Records {
 			record := file.Records[i]
 			if record.ID == "" || record.DeviceID == "" {
 				return nil, errors.New("remote job outbox contains invalid record")
+			}
+			if record.OriginSubmitted.IsZero() {
+				for _, event := range record.OriginEvents {
+					if !event.At.IsZero() && (record.OriginSubmitted.IsZero() || event.At.Before(record.OriginSubmitted)) {
+						record.OriginSubmitted = event.At
+					}
+				}
+				if record.OriginSubmitted.IsZero() {
+					record.OriginSubmitted = record.Updated
+				}
+				legacyTimestamps = legacyTimestamps || !record.OriginSubmitted.IsZero()
 			}
 			if bytes.Equal(bytes.TrimSpace(record.Cached), []byte("null")) {
 				// A nil RawMessage is persisted as JSON null; normalize it to the
@@ -85,20 +104,31 @@ func newRemoteJobOutbox(n *Node) (*remoteJobOutbox, error) {
 			}
 			o.records[record.ID] = &record
 		}
+		if legacyTimestamps {
+			if err := o.saveLocked(); err != nil {
+				return nil, fmt.Errorf("persist remote job admission timestamps: %w", err)
+			}
+		}
 	}
 	return o, nil
 }
 
 func (o *remoteJobOutbox) saveLocked() error {
-	file := remoteJobFile{Records: make([]remoteJobRecord, 0, len(o.records))}
+	rollbackEvents := o.appendOriginEventsLocked()
+	file := remoteJobFile{Records: make([]remoteJobRecord, 0, len(o.records)), NextOriginEventSequence: o.nextOriginEventSequence}
 	for _, record := range o.records {
 		file.Records = append(file.Records, *record)
 	}
 	data, err := json.Marshal(file)
 	if err != nil {
+		rollbackEvents()
 		return err
 	}
-	return state.WriteFileAtomic(o.path, data, 0600)
+	if err := state.WriteFileAtomic(o.path, data, 0600); err != nil {
+		rollbackEvents()
+		return err
+	}
+	return nil
 }
 
 func (o *remoteJobOutbox) start() {
@@ -316,9 +346,15 @@ func (o *remoteJobOutbox) cache(id string, result *mcp.CallToolResult, stateName
 		if stateName == "failed" {
 			record.State = "failed"
 		}
-		record.Cached = mustJSON(map[string]any{
+		receipt := map[string]any{
 			"job_id": record.ID, "state": record.State, "workspace": "ws/" + workspace, "error": reason,
-		})
+		}
+		if structured, ok := result.StructuredContent.(map[string]any); ok {
+			if code, ok := structured["code"].(string); ok && code != "" {
+				receipt["code"] = code
+			}
+		}
+		record.Cached = mustJSON(receipt)
 	case json.Valid([]byte(text)):
 		record.Cached = append(json.RawMessage(nil), text...)
 	case text != "":
@@ -420,9 +456,10 @@ func (o *remoteJobOutbox) submit(_ context.Context, deviceID, agent string, args
 		o.mu.Unlock()
 		return submissionResult(&copy), nil
 	}
+	now := time.Now().UTC()
 	record := &remoteJobRecord{
 		ID: id, DeviceID: deviceID, Agent: agent, AgentFingerprint: fingerprint,
-		RequestID: requestID, Args: encoded, State: "pending_delivery", Workspace: workspace, Updated: time.Now(),
+		RequestID: requestID, Args: encoded, State: "pending_delivery", Workspace: workspace, Updated: now, OriginSubmitted: now,
 	}
 	if _, ok := o.records[id]; ok {
 		o.mu.Unlock()
@@ -459,16 +496,18 @@ func submissionResult(record *remoteJobRecord) *mcp.CallToolResult {
 		result, err := provider.JSONResult(map[string]any{
 			"job_id": record.ID, "state": "cancellation_pending", "workspace": "ws/" + remoteJobWorkspace(record),
 			"message": "cancellation request is saved; target has not confirmed the job stopped",
+			"origin_submitted": record.OriginSubmitted,
 		})
 		if err == nil {
 			return result
 		}
 	}
 	if len(record.Cached) > 0 {
-		var value any
+		var value map[string]any
 		// A nil RawMessage is persisted as JSON null. It is an absent cache, not
 		// a receipt; after reload RawMessage contains the nonempty bytes "null".
 		if json.Unmarshal(record.Cached, &value) == nil && value != nil {
+			value["origin_submitted"] = record.OriginSubmitted
 			if result, err := provider.JSONResult(value); err == nil {
 				return result
 			}
@@ -494,13 +533,14 @@ func syntheticStatus(record *remoteJobRecord) *mcp.CallToolResult {
 		message = "target rejected job submission"
 	}
 	result, err := provider.JSONResult(map[string]any{
-		"job_id": record.ID, "state": stateName, "workspace": "ws/" + remoteJobWorkspace(record), "message": message,
+		"job_id": record.ID, "state": stateName, "workspace": "ws/" + remoteJobWorkspace(record), "message": message, "origin_submitted": record.OriginSubmitted,
 	})
 	if err != nil {
 		return provider.ErrorResult("could not encode job status: %v", err)
 	}
 	return result
 }
+
 
 func (o *remoteJobOutbox) call(ctx context.Context, deviceID, tool string, args json.RawMessage, agent string) (*mcp.CallToolResult, error) {
 	fingerprint, authorized := o.agentFingerprint(agent)
@@ -519,6 +559,9 @@ func (o *remoteJobOutbox) call(ctx context.Context, deviceID, tool string, args 
 	}
 	if _, paired := o.n.roster.Get(deviceID); !paired {
 		return provider.ErrorResult("device is not paired"), nil
+	}
+	if tool == "job_events" {
+		return o.events(ctx, deviceID, agent, fingerprint, args)
 	}
 	if tool == "job_submit" {
 		return o.submit(ctx, deviceID, agent, args)

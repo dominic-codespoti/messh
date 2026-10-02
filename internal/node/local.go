@@ -38,6 +38,8 @@ func (n *Node) localHandler() http.Handler {
 	n.registerScheduleAPI(api)
 	n.registerWakeAPI(api)
 	n.registerUpdateAPI(api)
+	n.registerGrantAPI(api)
+	n.registerRecipeAPI(api)
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", n.gateway.Handler(n.verifyAgent, n.agentMode))

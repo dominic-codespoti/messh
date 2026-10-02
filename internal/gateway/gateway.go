@@ -88,6 +88,7 @@ type device struct {
 func New(b Backend, version string, log *slog.Logger) *Gateway {
 	impl := &mcp.Implementation{Name: "messh", Version: version}
 	caps := &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{ListChanged: true}}
+	caps.AddExtension(tasksExtension, map[string]any{})
 	g := &Gateway{
 		backend: b,
 		log:     log,
@@ -108,6 +109,7 @@ func New(b Backend, version string, log *slog.Logger) *Gateway {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, Title: "Mesh devices"},
 	}, g.meshNodes)
+	g.installTasks()
 	g.addCompactTools()
 	g.Sync()
 	return g

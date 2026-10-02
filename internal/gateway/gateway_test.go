@@ -31,23 +31,30 @@ type backendCall struct {
 }
 
 type fakeBackend struct {
-	mu    sync.Mutex
-	nodes []Node
-	calls []backendCall
+	mu       sync.Mutex
+	nodes    []Node
+	calls    []backendCall
+	taskMode bool
 }
 
-func (f *fakeBackend) Nodes() []Node {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.nodes)
-}
-
+func (f *fakeBackend) Nodes() []Node { f.mu.Lock(); defer f.mu.Unlock(); return slices.Clone(f.nodes) }
 func (f *fakeBackend) Call(_ context.Context, deviceID, tool string, args json.RawMessage, agent string) (*mcp.CallToolResult, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, backendCall{device: deviceID, tool: tool, args: string(args), agent: agent})
+	taskMode := f.taskMode
 	f.mu.Unlock()
 	if tool == "broken" {
 		return nil, errors.New("connection refused")
+	}
+	if taskMode {
+		switch tool {
+		case "job_submit":
+			return &mcp.CallToolResult{StructuredContent: map[string]any{"job_id": "job-task", "state": "awaiting_approval", "message": "approval pending"}}, nil
+		case "job_status":
+			return &mcp.CallToolResult{StructuredContent: map[string]any{"job_id": "job-task", "state": "running", "submitted": time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}}, nil
+		case "job_cancel":
+			return &mcp.CallToolResult{StructuredContent: map[string]any{"job_id": "job-task", "state": "running"}}, nil
+		}
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ran " + tool + " on " + deviceID}}}, nil
 }

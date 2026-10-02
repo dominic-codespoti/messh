@@ -449,6 +449,13 @@ func (p *Provider) callDelete(raw json.RawMessage, c provider.Caller) (*mcp.Call
 			return nil, fmt.Errorf("persist job deletion tombstone: %w", err)
 		}
 	}
+	if err := p.appendDeletionEventLocked(j); err != nil {
+		j.deleting = false
+		if hasReceipt { receipt.Deleted = false; _ = p.saveSubmissionLocked(a.JobID, receipt) }
+		if !shared { delete(p.deleting, ws) }
+		p.mu.Unlock()
+		return nil, fmt.Errorf("persist job deletion event: %w", err)
+	}
 	p.mu.Unlock()
 
 	rmErr := os.RemoveAll(p.jobDir(a.JobID))

@@ -77,7 +77,7 @@ func ValidateSubmission(raw json.RawMessage) error {
 	if e := requireEOF(d); e != nil {
 		return e
 	}
-	allowed := map[string]bool{"request_id": true, "recovery": true, "command": true, "args": true, "cwd": true, "env": true, "shell": true, "inputs": true, "workspace": true, "resources": true, "timeout_seconds": true, "label": true}
+	allowed := map[string]bool{"request_id": true, "recipe": true, "recovery": true, "command": true, "args": true, "cwd": true, "env": true, "shell": true, "inputs": true, "workspace": true, "resources": true, "timeout_seconds": true, "label": true}
 	for k := range o {
 		if !allowed[k] {
 			return fmt.Errorf("unknown job_submit field %q", k)
@@ -91,6 +91,16 @@ func ValidateSubmission(raw json.RawMessage) error {
 		if !requestIDPattern.MatchString(id) {
 			return errors.New("request_id must be 1-128 characters: letters, digits, dot, underscore, colon or hyphen")
 		}
+	}
+	if b, ok := o["recipe"]; ok && string(b) != "null" {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(b, &fields); err != nil || fields == nil { return errors.New("recipe must be an object") }
+		for k := range fields { if k != "name" && k != "version" && k != "digest" && k != "parameters" { return fmt.Errorf("unknown recipe selector field %q", k) } }
+		var sel struct { Name string `json:"name"`; Version string `json:"version"`; Digest string `json:"digest"`; Parameters json.RawMessage `json:"parameters"` }
+		dec := json.NewDecoder(bytes.NewReader(b)); dec.DisallowUnknownFields(); if err := dec.Decode(&sel); err != nil { return fmt.Errorf("recipe: %w", err) }
+		if strings.TrimSpace(sel.Name)=="" || strings.TrimSpace(sel.Version)=="" || strings.TrimSpace(sel.Digest)=="" { return errors.New("recipe name, version, and digest are required") }
+		if len(sel.Parameters)==0 || string(sel.Parameters)=="null" { return errors.New("recipe parameters object is required") }
+		for k := range o { if k != "recipe" && k != "request_id" { return fmt.Errorf("job_submit recipe cannot be combined with execution override %q", k) } }
 	}
 	if b, ok := o["recovery"]; ok && string(b) != "null" {
 		var rm map[string]json.RawMessage
@@ -198,7 +208,7 @@ func (p *Provider) LookupSubmission(raw json.RawMessage, c provider.Caller) (*mc
 	}
 	st, ws := j.State, j.Workspace
 	p.mu.Unlock()
-	res, e := provider.JSONResult(submitResult{JobID: r.JobID, State: st, Workspace: files.RootWorkspaces + "/" + ws, Message: "Previously accepted submission; inspect with job_status."})
+	res, e := provider.JSONResult(submitResult{JobID: r.JobID, State: st, Workspace: files.RootWorkspaces + "/" + ws, Message: "Previously accepted submission; inspect with job_status.", Submitted: j.Submitted})
 	return res, true, e
 }
 func (p *Provider) submissionPath(id string) string {

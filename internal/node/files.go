@@ -12,6 +12,7 @@ import (
 
 	"messh/internal/files"
 	"messh/internal/gateway"
+	"messh/internal/grants"
 	"messh/internal/provider"
 	"messh/internal/provider/filesprov"
 )
@@ -38,16 +39,26 @@ func (n *Node) startFiles() error {
 		return fmt.Errorf("prepare file areas: %w", err)
 	}
 	n.files = &fileService{n: n, store: store}
-	n.register(filesprov.New(store))
+	n.register(filesprov.NewAuthorized(store, func(c provider.Caller, ref, action string) grants.Decision {
+		return n.fileProviderDecision(c, ref, action)
+	}, func(c provider.Caller, requested, entry, action string) bool {
+		if c.DeviceID == n.id.ID && c.Agent == cliAgent {
+			return true
+		}
+		return n.grants.CanSee(grants.Subject{DeviceID: c.DeviceID, Agent: c.Agent}, requested, entry, action)
+	}))
 	n.rebuildTools()
 	n.gateway.AddTool(meshCopyTool(), n.files.meshCopy)
 	n.goRun(func() { store.Sweep(n.ctx, tempFileMaxAge) })
 	return nil
 }
 
-// mount serves the file endpoints to paired peers only.
 func (fs *fileService) mount(mux *http.ServeMux) {
-	h := fs.n.requirePeer(files.NewHandler(fs.store))
+	h := fs.n.requirePeer(files.NewAuthorizedHandler(fs.store, func(r *http.Request, ref, action string) (bool, string) {
+		return fs.n.fileHTTPDecision(r, ref, action)
+	}, func(r *http.Request, requested, entry, action string) bool {
+		return fs.n.fileGrantVisible(r.Header.Get(hdrPeerID), r.Header.Get(files.HeaderAgent), requested, entry, action)
+	}))
 	mux.Handle(files.Path, h)
 	mux.Handle(files.Path+"/", h)
 }
@@ -106,6 +117,11 @@ func (fs *fileService) meshCopy(ctx context.Context, req *mcp.CallToolRequest) (
 	if a.From == "" || a.To == "" {
 		return provider.ErrorResult("mesh_copy: both from and to are required, as DEVICE:ref (e.g. desktop:ws/job/out.png)"), nil
 	}
+	agent := ""
+	if req.Extra != nil && req.Extra.TokenInfo != nil {
+		agent = req.Extra.TokenInfo.UserID
+	}
+	ctx = withFileAgent(ctx, agent)
 	srcDev, srcRef := files.SplitQualified(a.From)
 	dstDev, dstRef := files.SplitQualified(a.To)
 	srcID, srcLabel, err := fs.resolveDevice(srcDev)
@@ -115,6 +131,16 @@ func (fs *fileService) meshCopy(ctx context.Context, req *mcp.CallToolRequest) (
 	dstID, dstLabel, err := fs.resolveDevice(dstDev)
 	if err != nil {
 		return provider.ErrorResult("mesh_copy: to: %v", err), nil
+	}
+	if srcID == fs.n.id.ID {
+		if e := fs.n.authorizeLocalCopy(agent, srcRef, "read"); e != nil {
+			return provider.ErrorFrom(e, "mesh_copy source"), nil
+		}
+	}
+	if dstID == fs.n.id.ID {
+		if e := fs.n.authorizeLocalCopy(agent, dstRef, "write"); e != nil {
+			return provider.ErrorFrom(e, "mesh_copy destination"), nil
+		}
 	}
 
 	src, closeSrc, err := fs.endpoint(ctx, srcID)
@@ -132,17 +158,13 @@ func (fs *fileService) meshCopy(ctx context.Context, req *mcp.CallToolRequest) (
 	}
 
 	res, err := files.Copy(ctx, src, dst, srcRef, dstRef, files.CopyOptions{Overwrite: a.Overwrite, SameDevice: srcID == dstID})
-	agent := ""
-	if req.Extra != nil && req.Extra.TokenInfo != nil {
-		agent = req.Extra.TokenInfo.UserID
-	}
 	fs.n.log.Info("mesh_copy", "from", srcLabel+":"+srcRef, "to", dstLabel+":"+dstRef, "agent", agent,
 		"files", res.Files, "bytes", res.Bytes, "took", res.Duration.Round(time.Millisecond), "error", err)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return provider.ErrorResult("mesh_copy failed: %v", err), nil
+		return provider.ErrorFrom(err, "mesh_copy failed"), nil
 	}
 	secs := res.Duration.Seconds()
 	out := copyOut{
@@ -233,9 +255,9 @@ func (fs *fileService) dial(ctx context.Context, id string) (*files.Client, func
 		if fs.wrapTransport != nil {
 			rt = fs.wrapTransport(rt)
 		}
-		c := &files.Client{HTTP: &http.Client{Transport: rt}, Base: "https://" + addr}
+		c := &files.Client{HTTP: &http.Client{Transport: rt}, Base: "https://" + addr, CallerAgent: fileAgent(ctx)}
 		pctx, cancel := context.WithTimeout(ctx, filesProbeTimeout)
-		_, err := c.Stat(pctx, "")
+		_, err := c.List(pctx, "")
 		cancel()
 		if err == nil {
 			now := time.Now()

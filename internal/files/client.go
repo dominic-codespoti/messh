@@ -35,7 +35,14 @@ type Client struct {
 	IdleTimeout time.Duration
 	// Retries is how often an interrupted download resumes with a Range
 	// request before giving up (default 3).
-	Retries int
+	Retries     int
+	CallerAgent string
+}
+
+func (c *Client) setCaller(req *http.Request) {
+	if c.CallerAgent != "" {
+		req.Header.Set(HeaderAgent, c.CallerAgent)
+	}
 }
 
 func (c *Client) idle() time.Duration {
@@ -57,10 +64,12 @@ func (c *Client) queryURL(q url.Values) string { return c.Base + Path + "?" + q.
 type remoteError struct {
 	msg      string
 	sentinel error
+	code     string
 }
 
-func (e *remoteError) Error() string { return e.msg }
-func (e *remoteError) Unwrap() error { return e.sentinel }
+func (e *remoteError) Error() string     { return e.msg }
+func (e *remoteError) Unwrap() error     { return e.sentinel }
+func (e *remoteError) ErrorCode() string { return e.code }
 
 func decodeError(resp *http.Response) error {
 	var body []byte
@@ -74,7 +83,7 @@ func decodeError(resp *http.Response) error {
 		body, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		_ = json.Unmarshal(body, &eb)
 	}
-	e := &remoteError{msg: eb.Error}
+	e := &remoteError{msg: eb.Error, code: eb.Code}
 	if e.msg == "" {
 		e.msg = fmt.Sprintf("the other device answered %s", resp.Status)
 		if t := strings.TrimSpace(string(body)); t != "" && len(t) < 200 {
@@ -85,6 +94,10 @@ func decodeError(resp *http.Response) error {
 		if c.code == eb.Code {
 			e.sentinel = c.err
 		}
+	}
+	switch eb.Code {
+	case "no_matching_grant", "grant_expired", "grant_revoked":
+		e.sentinel = ErrCapabilityDenied
 	}
 	return e
 }
@@ -98,6 +111,7 @@ func (c *Client) getJSON(ctx context.Context, u string, v any) error {
 }
 
 func (c *Client) doJSON(req *http.Request, v any, cancelUpload context.CancelCauseFunc) error {
+	c.setCaller(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -309,6 +323,7 @@ func (s *getStream) connect() error {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", s.n))
 		req.Header.Set("If-Range", s.etag)
 	}
+	s.c.setCaller(req)
 	resp, err := s.c.HTTP.Do(req)
 	if err != nil {
 		if errors.Is(context.Cause(actx), errStalled) {

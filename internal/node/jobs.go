@@ -17,6 +17,7 @@ func (n *Node) startJobs() {
 		n.log.Warn("jobs unavailable", "error", err)
 		return
 	}
+	n.jobs = j
 	n.register(j)
 	// shutdown waits for goRun goroutines after the servers stop, so running
 	// jobs are gone by the time Done closes.

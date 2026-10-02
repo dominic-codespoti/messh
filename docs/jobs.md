@@ -1,6 +1,50 @@
 # Native durable jobs
 
-Use native job tools when work should run on a messh node in the background, survive node restarts, and expose durable status, logs, and outputs. The tools are job_submit, job_status, job_wait, job_list, job_logs, job_cancel, and job_delete, exposed remotely with a device prefix such as desktop__job_submit. The target owner must authorize every submission. A matching, previously saved owner-approved Always allow rule may satisfy the approval gate without a new prompt; never route around the owner gate by retrying through another agent or route.
+Use native job tools when work should run on a messh node in the background, survive node restarts, and expose durable status, events, logs, and outputs. The tools are job_submit, job_status, job_wait, job_list, job_events, job_logs, job_cancel, and job_delete, exposed remotely with a device prefix such as desktop__job_submit. The target owner must authorize every submission. A matching owner-approved rule or scoped capability grant may satisfy the approval gate without a new prompt; never route around the owner gate by retrying through another agent or route.
+
+## Capability discovery, checks, and owner-controlled grants
+
+Use `mesh_nodes` and `mesh_tools` to discover target tools and exact schemas; never guess names or arguments. `capability_list` shows only the caller’s grants. `capability_check` previews the grant decision for an exact tool+args or file path/action, and returns the native approval `args_hash` when applicable; it does not execute the request or replace other owner approval policy. A denial is not permission to route around policy.
+
+Only the target owner changes grants: `messh grant ls`, `messh grant add KIND --actions ACTIONS --agent AGENT --device DEVICE_ID --expires-in DURATION` (optional `--tool`, `--args-hash`, `--path`), or `messh grant rm ID`. Grants bind device ID + agent label, exact tool request or file subtree/action, and finite expiry. Revocation/expiry blocks new admissions; accepted work continues. File access is deny-by-default: pairing alone grants none; there is no paired-peer migration. Narrow grants cover listings, reads/writes, copies, and relays; artifacts cannot be written.
+
+## Owner-published job recipes
+Discover with `recipe_list`, then call `recipe_get` using the exact name, version, and digest it returned. Read its typed parameter schema and fixed execution details; do not infer or alter arguments. Example definition for owner publication (`messh recipe publish recipe.json`):
+
+```json
+{"name":"count","version":"1.0.0","command":"printf","args":[{"value":"%d\n"},{"parameter":"count"}],"parameters":{"type":"object","properties":{"count":{"type":"integer","minimum":1,"maximum":4}},"required":["count"],"additionalProperties":false}}
+```
+The example requires an installed `printf` executable on the target (for example, a Linux node). On other targets, the owner publishes a recipe for an appropriate installed executable; publishing a definition does not install that program.
+
+
+After publication, use the digest actually returned by `recipe_get` (never copy a guessed or stale digest). For example, once discovery returns the current digest, submit with `{"request_id":"count-001","recipe":{"name":"count","version":"1.0.0","digest":"<digest returned by recipe_get>","parameters":{"count":3}}}`. The parameter is validated and occupies its own argv slot; the recipe fixes the command and execution settings. Recipes are immutable per version. Disable via owner-only `messh recipe disable NAME VERSION`; this blocks future submissions but leaves accepted job snapshots unchanged. Retrying uses the same `request_id` and exact payload; durable origin outbox/target receipts preserve accepted submissions across restart. A normal running process is not replayed after its node restarts.
+
+Never publish or disable recipes as an agent without the owner’s exact instruction.
+
+## Durable job events
+Discover `job_events` via `mesh_tools`; it accepts `cursor`, `limit` (1..128), and `wait_ms` (0..30000). Store and resume the opaque `next_cursor`; it is owner/credential and source scoped, not a global sequence. On `cursor_expired`, reconcile the included snapshot against `job_list`/`job_status`; use the returned composite `next_cursor` when present. Target cursor expiration itself includes the target snapshot; the origin wrapper preserves its origin cursor while resetting only the target cursor. Offline target responses may be `stale:true`; this is not live target confirmation. Origin and target event streams are source-separated; do not infer a total order across them.
+
+## Optional negotiated MCP Tasks (2026 extension)
+
+The gateway advertises support for `io.modelcontextprotocol/tasks`. To request Task results, include this metadata on each tool call and Tasks method request:
+
+```json
+{
+  "_meta": {
+    "io.modelcontextprotocol/clientCapabilities": {
+      "extensions": { "io.modelcontextprotocol/tasks": {} }
+    }
+  }
+}
+```
+
+Negotiated full or compact `job_submit` calls return the Task/tool-result union (`resultType: "task"` on acceptance). Clients without the extension keep ordinary native tool-call results. Supported methods are `tasks/get` (`{taskId}`, with an inline result), `tasks/cancel` (`{taskId}`), and `tasks/update` (`{taskId,inputResponses?}`). This server issues no client input requests, so updates cannot supply an owner approval. There is no `tasks/list` or `tasks/result`.
+
+The Tasks view is an adapter over native jobs, not another durable job state machine. Native `job_status` remains authoritative. A Task can remain working while delivery is pending or cancellation is unconfirmed; do not report either as target acceptance or completed cancellation. The origin preserves the same task ID across restart for its durable submission. Cross-agent access to another owner’s task is rejected. Owner approval still applies: a Task operation cannot approve itself or bypass the target’s gate. For work that should survive a disconnect/restart, retain the native `request_id` and reconcile through `job_status`/`job_events`.
+
+Task handles and creation timestamps use durable admission metadata: native receipts include `submitted`, and remote-origin receipts additionally include `origin_submitted`. Replays and origin restarts preserve the handle and creation time, including after target delivery. Older outbox entries without admission metadata use their earliest retained origin-event timestamp or recorded ledger timestamp; this is the earliest known persisted time, not a reconstructed exact historical submission time.
+
+The Go SDK v1.8.0 typed `CallTool` client contract cannot express this task/call union; clients must use union-aware response decoding when they negotiate Tasks. The mesh gateway negotiates and presents this per request, while native tool calls remain unchanged for clients that do not negotiate.
 
 ## Submit and follow
 

@@ -13,10 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"messh/internal/files"
+	"messh/internal/grants"
 )
 
 // startFileNode is startNode with a free-space probe that does not depend on
@@ -40,6 +42,18 @@ func newFileMesh(t *testing.T) fileMesh {
 	m := fileMesh{raspi: startFileNode(t, "raspi"), desktop: startFileNode(t, "desktop"), nas: startFileNode(t, "nas")}
 	pair(t, m.desktop, m.raspi)
 	pair(t, m.nas, m.raspi)
+	for _, target := range []*Node{m.desktop, m.nas} {
+		for _, path := range []string{"ws/job", "ws/inbox", "ws/demo", "ws/share", "ws/proj", "ws/proj-copy", "ws/model", "ws/in", "ws/new", "ws/x", "ws/job2"} {
+			_, err := target.grants.Create(grants.Grant{Subject: grants.Subject{DeviceID: m.raspi.ID(), Agent: cliAgent}, Kind: "file", Path: path, Actions: []string{"read", "write"}, ExpiresAt: time.Now().Add(time.Hour)})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := target.grants.Create(grants.Grant{Subject: grants.Subject{DeviceID: m.raspi.ID(), Agent: cliAgent}, Kind: "file", Path: "artifacts/voicestudio", Actions: []string{"read"}, ExpiresAt: time.Now().Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	m.agent = agentSession(t, m.raspi)
 	return m
 }
@@ -147,6 +161,28 @@ func TestMeshCopyBetweenDevices(t *testing.T) {
 	mustCopy(t, m.agent, "ws/job/in.bin", "ws/job2/copy.bin")
 	if got, err := readWS(t, m.raspi, "ws/job2/copy.bin"); err != nil || !bytes.Equal(got, payload) {
 		t.Fatalf("local copy differs: %v", err)
+	}
+}
+
+func TestMeshCopyRemoteToRemoteRequiresDestinationGrant(t *testing.T) {
+	m := newFileMesh(t)
+	payload := []byte("authorized relay")
+	writeWS(t, m.desktop, "ws/job/relay.txt", payload)
+	if _, text, isErr := meshCopy(t, m.agent, "desktop:ws/job/relay.txt", "nas:ws/relay/out.txt", false); !isErr || !strings.Contains(text, "capability denied") {
+		t.Fatalf("ungranted relay: err=%v %q", isErr, text)
+	}
+	if _, err := readWS(t, m.nas, "ws/relay/out.txt"); err == nil {
+		t.Fatal("ungranted relay published a destination file")
+	}
+	if _, err := m.nas.grants.Create(grants.Grant{Subject: grants.Subject{DeviceID: m.raspi.ID(), Agent: cliAgent}, Kind: "file", Path: "ws/relay", Actions: []string{"read", "write"}, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, text, isErr := meshCopy(t, m.agent, "desktop:ws/job/relay.txt", "nas:ws/relay/out.txt", false); isErr {
+		t.Fatalf("granted relay: %q", text)
+	}
+	got, err := readWS(t, m.nas, "ws/relay/out.txt")
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("granted relay payload = %q, err=%v", got, err)
 	}
 }
 
@@ -291,6 +327,9 @@ func TestMeshCopyDetectsCorruption(t *testing.T) {
 
 func TestMeshCopyRefusals(t *testing.T) {
 	m := newFileMesh(t)
+	if _, err := m.desktop.grants.Create(grants.Grant{Subject: grants.Subject{DeviceID: m.raspi.ID(), Agent: cliAgent}, Kind: "file", Path: "ws/nothing", Actions: []string{"read"}, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
 	writeWS(t, m.raspi, "ws/job/a.txt", []byte("a"))
 
 	cases := []struct{ name, from, to, want string }{
@@ -337,6 +376,14 @@ func TestFilesToolsReachPairedDevice(t *testing.T) {
 	text, isErr = call("desktop__files_stat", map[string]any{"ref": "ws/job/out.png", "sha256": true})
 	if isErr || !strings.Contains(text, digest([]byte("png"))) {
 		t.Fatalf("files_stat: %v %s", isErr, text)
+	}
+	denied, err := m.agent.CallTool(t.Context(), &mcp.CallToolParams{Name: "desktop__files_stat", Arguments: map[string]any{"ref": "ws/private/secret.txt"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, ok := denied.StructuredContent.(map[string]any)
+	if !denied.IsError || !ok || decision["code"] != "no_matching_grant" {
+		t.Fatalf("ungranted files_stat decision = %#v, error=%v", denied.StructuredContent, denied.IsError)
 	}
 	if _, isErr = call("desktop__files_mkdir", map[string]any{"ref": "ws/new/dir"}); isErr {
 		t.Fatal("files_mkdir failed")

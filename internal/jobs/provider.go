@@ -23,6 +23,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"messh/internal/provider"
+	"messh/internal/recipes"
 	"messh/internal/state"
 )
 
@@ -61,6 +62,7 @@ const (
 type job struct {
 	Job
 	seq         uint64
+	eventState  State
 	ticket      provider.Ticket
 	ctx         context.Context // ends the approval wait / input snapshot
 	cancel      context.CancelFunc
@@ -79,11 +81,12 @@ type pendingKey struct{ owner, exact string }
 
 // Provider implements provider.Provider and provider.Gated for the job tools.
 type Provider struct {
-	opts  Options
-	log   *slog.Logger
-	paths state.Paths
-	res   Resources
-	inh   SleepInhibitor
+	opts           Options
+	log            *slog.Logger
+	paths          state.Paths
+	res            Resources
+	RecipeRegistry *recipes.Registry
+	inh            SleepInhibitor
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -104,10 +107,14 @@ type Provider struct {
 	hashes   hashCache
 	sleepErr string // last sleep-inhibitor Hold failure, logged once; "" after a good hold
 
-	closeOnce   sync.Once
-	submissions map[string]submissionRecord
-	preparing   []*job
-	restoring   []*job
+	closeOnce        sync.Once
+	submissions      map[string]submissionRecord
+	preparing        []*job
+	restoring        []*job
+	nextEventSeq     uint64
+	eventWake        chan struct{}
+	tombstoneEvents  []Event
+	tombstoneDropped map[string]uint64
 }
 
 type pendingVal struct {
@@ -166,7 +173,15 @@ func New(ctx context.Context, opts Options) (*Provider, error) {
 		ctx: pctx, cancel: cancel, wake: make(chan struct{}, 1),
 		jobs: map[string]*job{}, gpuBusy: map[int]string{},
 		pending: map[pendingKey]pendingVal{}, deleting: map[string]bool{}, submissions: map[string]submissionRecord{},
+		tombstoneDropped: map[string]uint64{},
+		eventWake:        make(chan struct{}),
 	}
+	reg, err := recipes.New(filepath.Join(opts.Paths.Root, "recipes.json"))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("load job recipe registry: %w", err)
+	}
+	p.RecipeRegistry = reg
 	if err := p.load(); err != nil {
 		cancel()
 		return nil, err
@@ -220,6 +235,9 @@ func (p *Provider) load() error {
 	if err != nil {
 		return err
 	}
+	if err := p.loadTombstones(); err != nil {
+		return err
+	}
 	var loaded []*job
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -235,6 +253,15 @@ func (p *Provider) load() error {
 			continue
 		}
 		j := &job{Job: rec, changed: make(chan struct{}), ready: make(chan struct{})}
+		for _, event := range rec.Events {
+			if event.Sequence > p.nextEventSeq {
+				p.nextEventSeq = event.Sequence
+			}
+			j.eventState = event.State
+		}
+		if rec.EventDroppedThrough > p.nextEventSeq {
+			p.nextEventSeq = rec.EventDroppedThrough
+		}
 		j.ctx, j.cancel = context.WithCancel(context.Background())
 		close(j.ready)
 		loaded = append(loaded, j)
@@ -378,6 +405,9 @@ func (p *Provider) writeState(path string, data []byte, mode os.FileMode) error 
 
 // touchLocked persists the job and wakes waiters only after commit.
 func (p *Provider) touchLocked(j *job) error {
+	if j.eventState != j.State {
+		return p.appendEventLocked(j, "state_changed")
+	}
 	err := p.persistLocked(j)
 	if err == nil {
 		close(j.changed)
@@ -399,7 +429,27 @@ func (p *Provider) Approval(ctx context.Context, tool string, args json.RawMessa
 	if tool != toolSubmit {
 		return provider.Approval{}, fmt.Errorf("%s needs no approval", tool)
 	}
-	req, err := p.parseSubmit(args)
+	if _, found, err := p.LookupSubmission(args, caller); err != nil {
+		return provider.Approval{}, err
+	} else if found {
+		var a struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal(args, &a); err != nil {
+			return provider.Approval{}, err
+		}
+		id := SubmissionID(caller.DeviceID, caller.Agent, a.RequestID)
+		p.mu.Lock()
+		j := p.jobs[id]
+		if j == nil {
+			p.mu.Unlock()
+			return provider.Approval{}, errors.New("accepted job disappeared during replay")
+		}
+		accepted := j.Job
+		p.mu.Unlock()
+		return ApprovalForJob(accepted), nil
+	}
+	req, _, _, err := p.parseOptionalRecipeSubmit(args)
 	if err != nil {
 		return provider.Approval{}, err
 	}
@@ -454,7 +504,7 @@ func (p *Provider) takePending(owner, exact string) bool {
 func (p *Provider) Call(ctx context.Context, tool string, args json.RawMessage, caller provider.Caller) (*mcp.CallToolResult, error) {
 	switch tool {
 	case toolSubmit:
-		return p.callSubmit(ctx, args, caller)
+		return p.callSubmit(ctx, args, caller, nil, nil, nil)
 	case toolStatus:
 		return p.callStatus(ctx, args, caller)
 	case toolWait:
@@ -469,6 +519,12 @@ func (p *Provider) Call(ctx context.Context, tool string, args json.RawMessage, 
 		return p.callDelete(args, caller)
 	case toolResources:
 		return p.callResources(ctx, caller)
+	case toolEvents:
+		return p.callEvents(ctx, args, caller)
+	case "recipe_list":
+		return p.callRecipeList(ctx, args, caller)
+	case "recipe_get":
+		return p.callRecipeGet(ctx, args, caller)
 	}
 	return nil, fmt.Errorf("unknown tool %q", tool)
 }

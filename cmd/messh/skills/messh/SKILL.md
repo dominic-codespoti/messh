@@ -38,12 +38,12 @@ device owner:
 - `pair approve|confirm|accept`, `unpair`
 - `agent rm`, `agent token` (prints a secret into this transcript)
 - `firewall allow|remove`, `browser reset-profile`, `service rm`
+- `grant add|rm`, `recipe publish|disable` (owner policy mutations)
 
 Never approve your own pending requests, and never route around an approval
 (a different agent name, device, or call path) to avoid one.
 
-## Recipes (all with --json)
-
+## CLI cookbook (all with --json)
 Is the node up?
 
 `messh status --json` — name, version, addresses, up since. Exit 3 means no
@@ -84,6 +84,16 @@ Network trouble?
 
 `messh doctor --json` — checks node, interfaces, firewall, multicast, peers,
 each ok/warn/fail/unknown with a Fix list. Changes nothing.
+
+## Capability checks and job recipes
+Discover exact tools and schemas with `mesh_tools`; never guess arguments. `capability_list` shows caller grants. `capability_check` is a preview, not approval or execution; use only its returned exact `args_hash`. Never run grant mutations or recipe publish/disable without the owner’s exact instruction. File access is deny-by-default; pairing grants no file access.
+
+Discover recipes with `recipe_list`, inspect exact name/version/digest and typed parameter schema through `recipe_get`, then use the returned digest and schema-valid parameters in `job_submit`. Disable prevents new submissions, not accepted jobs.
+
+## MCP Tasks and durable job events
+The gateway advertises support for the optional 2026 `io.modelcontextprotocol/tasks` extension. Task results require per-request negotiation in `_meta.io.modelcontextprotocol/clientCapabilities.extensions`; ordinary clients keep native tool-call results. Supported methods are `tasks/get` with `taskId` (inline result), `tasks/update` with `taskId` and optional `inputResponses`, and `tasks/cancel` with `taskId`. There is no `tasks/list` or `tasks/result`, and no client input requests. Pending delivery and unconfirmed cancellation stay working, not accepted or stopped. Tasks cannot approve work or bypass owner policy. Handles remain owner-scoped across origin restart.
+The Go SDK v1.8.0 typed `CallTool` contract cannot represent this result union; a Tasks-negotiating client must decode it with union-aware handling. Non-negotiating clients continue using native tools.
+Discover `job_events` schema via `mesh_tools`; persist opaque cursors. On expiration reconcile the snapshot and resume with a returned composite cursor when provided. Origin/target source streams are separate; `stale` is not live confirmation. `job_status` remains authoritative.
 
 ## Durable jobs
 

@@ -148,8 +148,11 @@ The mode change applies on the agent's next request.
 | `<device>__<service>__<tool>` | an MCP service's own tools, re-published (e.g. `desktop__voicestudio__generate_speech`) |
 | `<device>__service_describe` / `service_call` | search an OpenAPI service's operations / make an HTTP request to a REST or plain HTTP service |
 | `<device>__openai_models` / `openai_chat` | list models / non-streaming chat on an OpenAI-compatible service (Ollama, LM Studio, Unsloth Studio) |
-| `<device>__job_submit` | run a program on the device as a background job (needs approval on that device); returns a `job_id` |
-| `<device>__job_status` / `job_wait` / `job_logs` | state, exit code, queue position, output files (refs) and logs; block until done; follow stdout/stderr |
+| `<device>__job_submit` | run a program on the device as a background job; returns a `job_id` |
+| `<device>__job_status` / `job_wait` / `job_logs` | state, outputs, logs, and blocking status wait |
+| `<device>__job_events` | owner-scoped lifecycle events with an opaque resumable cursor |
+| `<device>__capability_list` / `capability_check` | caller-scoped grants and exact admission preview; does not execute or replace owner approval |
+| `<device>__recipe_list` / `recipe_get` | discover owner-published immutable job recipes and typed parameter schemas |
 | `<device>__job_cancel` / `job_list` / `job_delete` | kill a job's whole process tree; list your jobs; remove a finished job and its workspace |
 | `<device>__job_resources` | CPU threads, RAM, GPUs with VRAM total/free, and which are claimed by jobs |
 | `mesh_copy` | copy a file or directory between devices (not per-device) |
@@ -408,9 +411,8 @@ and has not been verified on a real Hyprland desktop.
 
 Two directories inside the state directory are shared between devices: `ws/`
 (working files for jobs) and `artifacts/` (outputs messh captured). Files are
-named by refs such as `ws/render/scene.blend` or `desktop:artifacts/voicestudio/ab12cd.wav`
-(device prefix optional). Paired devices stream files over the pinned mesh
-connection, never through MCP payloads:
+named by refs such as `ws/render/scene.blend` or `desktop:artifacts/voicestudio/ab12cd.wav`.
+Named refs may include a device prefix. Files stream over the pinned mesh connection rather than MCP payloads. File access is deny-by-default: pairing alone grants none and there is no blanket peer migration. Finite path/action grants enforce list/read/write/copy/relay; peers cannot write `artifacts/`. See [capability guidance](jobs.md#capability-discovery-checks-and-owner-controlled-grants).
 
 - `mesh_copy {from, to, overwrite?}`: file or directory, local to remote, remote to
   local, or remote to remote (relayed). SHA-256 is verified end to end; a
@@ -540,12 +542,8 @@ notice makes calls fail fast.
   and require a per-agent bearer token. The node records which device and agent
   made every call. Approval buttons in notifications use a separate loopback
   endpoint that accepts only a single-use nonce for that one request.
-- Anything that runs code (`job_submit`), acts through a local service (including
-  model requests through the proxy), or drives the browser passes the host's
-  approval gate, unless a saved rule or configured automatic policy permits it
-  (see [Approvals](#approvals) and [Services](#services)). Paired devices can read
-  `ws/` and `artifacts/`, write `ws/`, fetch Wake-on-LAN addresses, and send sleep
-  notices to each other without interactive approval. Pair only trusted devices.
+- Anything that runs code (`job_submit`), acts through a local service, or drives the browser passes the host approval gate unless an owner-approved rule or policy permits it (see [Approvals](#approvals) and [Services](#services)). Owners may also create narrow, finite grants bound to device ID + agent label and exact tool request or file subtree/action. A grant check previews admission, not execution or independent human identity. Pairing alone grants no file access; there is no blanket migration. File access is deny-by-default for listing, read/write, copy, and relay; artifacts cannot be written. Expiry/revocation blocks new admissions but does not stop accepted work. Paired peers may exchange Wake-on-LAN addresses and sleep notices. Pair only trusted devices.
+- A local agent label is authenticated by its bearer token. A remote agent label is an assertion made by the authenticated, trusted peer owner; it is not an independent end-to-end agent identity. Grants do not isolate a caller from its own peer owner or from processes sharing the host OS account.
 - **Same-user agents are fully trusted locally.** An agent running under the
   node owner's OS account can read its state directory, bearer tokens, control
   token, service credentials, and browser profile. It can use the owner's control
@@ -586,6 +584,10 @@ Per user: `%LOCALAPPDATA%\messh` on Windows, `$XDG_STATE_HOME/messh`
 | `browser.json` | browser control settings: mode, channel, allowed/denied sites (owner-only; may hold the extension token) |
 | `schedules.json` | scheduled calls of this node's agents: arguments and the last 20 results of each (owner-only) |
 | `browser/profile/` | the agent-only browser profile in `profile` mode: its cookies and sign-ins |
+| `grants.json` | finite owner-managed capability grants and revocations (owner-only) |
+| `recipes.json` | immutable recipe definitions, schemas/digests, disabled status (owner-only, atomic, mode 0600) |
+| `jobs/event-tombstones.json` | durable owner-scoped lifecycle events for deleted jobs |
+| `remote-jobs.json` | durable origin delivery receipts, credential-scoped cached status, and origin events |
 | `browser/work/` | the browser's scratch folder (screenshots before they are saved as artifacts, staged uploads); wiped at each start |
 | `run.json` | address of the running node, for the CLI |
 
