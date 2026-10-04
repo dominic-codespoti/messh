@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -201,7 +202,7 @@ func TestTasksReportOfflineDeliveryAndUnconfirmedCancellationAsWorkingTasks(t *t
 		"device": "task-target",
 		"tool":   "job_submit",
 		"arguments": map[string]any{
-			"command":    "/usr/bin/printf",
+			"command":    os.Args[0],
 			"args":       []string{"offline"},
 			"request_id": "tasks-offline-state",
 		},
@@ -295,7 +296,7 @@ func TestTasksReportOfflineDeliveryAndUnconfirmedCancellationAsWorkingTasks(t *t
 		"device": "task-target",
 		"tool":   "job_submit",
 		"arguments": map[string]any{
-			"command":    "/usr/bin/printf",
+			"command":    os.Args[0],
 			"args":       []string{"delivered"},
 			"request_id": "tasks-delivered-state",
 		},
@@ -308,7 +309,7 @@ func TestTasksReportOfflineDeliveryAndUnconfirmedCancellationAsWorkingTasks(t *t
 	deliveredJobID := taskIDFromOpaqueForTest(t, deliveredID)
 	waitFor(t, "target job acceptance", func() bool {
 		record := restarted.remoteJobs.find(restartedTarget.ID(), "worker", deliveredJobID)
-		return record != nil && record.State != "pending_delivery"
+		return record != nil && record.State != "pending_delivery" && record.State != "failed"
 	})
 	delivered := getTaskBehavior(t, t.Context(), restartedSession, deliveredID)
 	if delivered.CreatedAt != deliveredCreatedAt {

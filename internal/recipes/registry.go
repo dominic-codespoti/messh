@@ -112,8 +112,8 @@ type Invocation struct {
 
 func key(name, version string) string { return name + "\x00" + version }
 
-// New loads the registry strictly. A corrupt or overly permissive file is a
-// startup error; no partial catalog is ever exposed.
+// New loads the registry strictly. A corrupt file, or a file with overly broad
+// POSIX permissions, is a startup error; no partial catalog is ever exposed.
 func New(path string) (*Registry, error) {
 	r := &Registry{path: path, recipes: map[string]compiled{}}
 	st, err := os.Lstat(path)
@@ -126,8 +126,8 @@ func New(path string) (*Registry, error) {
 	if !st.Mode().IsRegular() {
 		return nil, errors.New("recipe registry must be a regular file")
 	}
-	if st.Mode().Perm() != 0o600 {
-		return nil, fmt.Errorf("recipe registry permissions must be 0600, got %04o", st.Mode().Perm())
+	if err := checkRegistryPermissions(st); err != nil {
+		return nil, err
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {

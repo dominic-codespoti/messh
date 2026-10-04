@@ -631,7 +631,7 @@ Per user: `%LOCALAPPDATA%\messh` on Windows, `$XDG_STATE_HOME/messh`
 | `schedules.json` | scheduled calls of this node's agents: arguments and the last 20 results of each (owner-only) |
 | `browser/profile/` | the agent-only browser profile in `profile` mode: its cookies and sign-ins |
 | `grants.json` | finite owner-managed capability grants and revocations (owner-only) |
-| `recipes.json` | immutable recipe definitions, schemas/digests, disabled status (owner-only, atomic, mode 0600) |
+| `recipes.json` | immutable recipe definitions, schemas/digests, disabled status (owner-only, atomic; mode 0600 on POSIX, Windows ACL inherited from the state directory) |
 | `jobs/event-tombstones.json` | durable owner-scoped lifecycle events for deleted jobs |
 | `remote-jobs.json` | durable origin delivery receipts, credential-scoped cached status, and origin events |
 | `browser/work/` | the browser's scratch folder (screenshots before they are saved as artifacts, staged uploads); wiped at each start |
