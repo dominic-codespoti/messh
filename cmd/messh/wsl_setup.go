@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/sys/windows"
 	"net"
 	"net/netip"
 	"os"
@@ -18,8 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/windows"
+	"unicode/utf16"
 
 	"messh/internal/state"
 	"messh/internal/wslroute"
@@ -541,8 +542,7 @@ func wslApplyMachineRouteElevated(ctx context.Context, c *Context, cfg state.WSL
 	if err != nil {
 		return false, false, err
 	}
-	params := "-NoProfile -NonInteractive -Command " + installScript + " " +
-		quoteWinArg(scriptPath) + " " + quoteWinArg(cfgPath) + " " + quoteWinArg(logFile.Name())
+	params := "-NoProfile -NonInteractive -EncodedCommand " + quoteWinArg(wslEncodePowerShell(installScript, scriptPath, cfgPath, logFile.Name()))
 	code, err := runElevated(ctx, filepath.Join(sys, `WindowsPowerShell\v1.0\powershell.exe`), params)
 	if isCancelled(err) {
 		return false, false, needsPerson("cancelled at the UAC prompt; nothing changed",
@@ -578,17 +578,16 @@ func wslReadLog(path string) []string {
 	return lines
 }
 
-// wslInstallScript returns the elevated installer: it validates its argv,
+// wslInstallScript returns the elevated installer: it validates its parameters,
 // rejects reparse paths and insecure ownership, protects the ProgramData
 // directory/files with admin-only ACLs, installs the SYSTEM route-only task
 // (triggerable but not modifiable by the owner), then runs the staged route
-// script once. The script holds no double quote so the command line cannot
-// reinterpret it; all values arrive as argv literals.
+// script once. Paths are bound only as quoted string literals by
+// wslEncodePowerShell; the installer itself remains fixed privileged code.
 func wslInstallScript(cfg state.WSLTargetConfig) string {
 	progdata := "$env:ProgramData + '\\messh\\wsl'"
 	script := "$ErrorActionPreference='Stop'; " +
 		"[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); " +
-		"$stageScript=$args[0]; $stageCfg=$args[1]; $logPath=$args[2]; " +
 		"function WLog([string]$m) { $m | Out-File -LiteralPath $logPath -Append -Encoding utf8 }; " +
 		"foreach ($p in @($stageScript,$stageCfg)) { $it=Get-Item -LiteralPath $p -Force; " +
 		"if (($it.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw ('refusing reparse staging path: ' + $p) } }; " +
@@ -601,32 +600,46 @@ func wslInstallScript(cfg state.WSLTargetConfig) string {
 		"if (($di.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw ('refusing reparse destination: ' + $dest) } " +
 		"if (-not $di.PSIsContainer) { throw ('refusing non-directory destination: ' + $dest) }; " +
 		"& icacls $dest /inheritance:r | Out-Null; " +
-		"& icacls $dest /grant:r SYSTEM:(OI)(CI)F BUILTIN\\Administrators:(OI)(CI)F | Out-Null; " +
+		"& icacls $dest /grant:r 'SYSTEM:(OI)(CI)F' 'BUILTIN\\Administrators:(OI)(CI)F' | Out-Null; " +
 		"if ($LASTEXITCODE -ne 0) { throw 'cannot protect route directory' }; " +
 		"$targetScript=Join-Path $dest 'wsl-route.ps1'; $targetCfg=Join-Path $dest 'route.json'; " +
 		"Copy-Item -LiteralPath $stageScript -Destination $targetScript -Force; " +
 		"Copy-Item -LiteralPath $stageCfg -Destination $targetCfg -Force; " +
-		"& icacls $targetScript /inheritance:r /grant:r SYSTEM:F BUILTIN\\Administrators:F | Out-Null; " +
+		"& icacls $targetScript /inheritance:r /grant:r 'SYSTEM:F' 'BUILTIN\\Administrators:F' | Out-Null; " +
 		"if ($LASTEXITCODE -ne 0) { throw 'cannot protect route script' }; " +
-		"& icacls $targetCfg /inheritance:r /grant:r SYSTEM:F BUILTIN\\Administrators:F | Out-Null; " +
+		"& icacls $targetCfg /inheritance:r /grant:r 'SYSTEM:F' 'BUILTIN\\Administrators:F' | Out-Null; " +
 		"if ($LASTEXITCODE -ne 0) { throw 'cannot protect route config' }; " +
 		"$taskName=" + psQuote(cfg.RouteTaskName) + "; " +
 		"$pw=Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'; " +
 		"$actionArg='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + $targetScript; " +
 		"$act=New-ScheduledTaskAction -Execute $pw -Argument $actionArg; " +
 		"$prin=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; " +
-		"$set=New-ScheduledTaskSettingsSet -AllowStartOnDemand -MultipleInstances IgnoreNew; " +
+		"$set=New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew; " +
 		"Register-ScheduledTask -TaskName $taskName -TaskPath '\\' -Action $act -Principal $prin -Settings $set -Force | Out-Null; " +
 		"WLog('installed route task ' + $taskName); " +
 		"& $pw -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $targetScript 2>&1 | Out-File -LiteralPath $logPath -Append -Encoding utf8; " +
 		"if ($LASTEXITCODE -ne 0) { throw 'route script failed' }; " +
 		"WLog('route applied')"
-	if strings.ContainsRune(script, '"') {
-		// Callers treat this as fatal: the elevated command line must not
-		// carry a double quote that Windows could reinterpret.
-		panic("internal error: elevated WSL installer contains a double quote")
-	}
 	return script
+}
+
+// wslEncodePowerShell passes the fixed installer as an encoded PowerShell
+// scriptblock and binds staging paths as quoted string literal parameters.
+// -Command consumes its remaining command line as code, so appended paths never
+// reached $args and caused powershell.exe to reject the invocation immediately.
+func wslEncodePowerShell(script, stageScript, stageCfg, logPath string) string {
+	command := "& { param($stageScript,$stageCfg,$logPath)\n" + script + "\n} " +
+		psQuote(stageScript) + " " + psQuote(stageCfg) + " " + psQuote(logPath)
+	encoded := make([]byte, 0, 2*len(command))
+	for _, r := range command {
+		if r <= 0xFFFF {
+			encoded = append(encoded, byte(r), byte(r>>8))
+			continue
+		}
+		hi, lo := utf16.EncodeRune(r)
+		encoded = append(encoded, byte(hi), byte(hi>>8), byte(lo), byte(lo>>8))
+	}
+	return base64.StdEncoding.EncodeToString(encoded)
 }
 
 // quoteWinArg quotes one argv element with CommandLineToArgvW rules.

@@ -165,6 +165,10 @@ flags and approve its UAC prompt to replace the installed route script/task.
 Updating the binary alone does not update installed PowerShell copies;
 `messh wsl refresh` may reuse the existing secured task.
 
+The one-shot elevated installer passes its fixed PowerShell body separately from
+quoted staging-path literals (including paths with spaces or quotes); setup does
+not execute staging files as privileged code. The protected route files remain
+administrator/SYSTEM-owned.
 ## Tools
 
 Tool visibility is configured per agent. The default `compact` mode lists mesh-wide discovery/call tools; the agent invokes a target tool through `mesh_call`. `full` mode also lists every target tool as `<device>__<tool>`. Manage it with:
