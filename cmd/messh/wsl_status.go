@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -110,10 +111,11 @@ func wslStatusRemote(c *Context, device string, transport time.Duration) error {
 	}
 	return c.Emit(raw, func(w io.Writer) { writeWSLStatus(w, raw) })
 }
-// meshToolCall routes one ClassInfo tool call through mesh_call: the device
-// reference travels verbatim for the gateway to resolve, so exact IDs win
-// over ambiguous names there. Transport failures propagate as-is: an
-// unreachable Windows host reads as unreachable, never as a stopped guest.
+// meshToolCall routes one ClassInfo tool call through the gateway in the
+// CLI's own mode: full mode calls the exact namespaced tool, compact mode
+// sends a mesh_call envelope for the gateway to resolve. Transport failures
+// propagate as-is: an unreachable Windows host reads as unreachable, never
+// as a stopped guest.
 func meshToolCall(c *Context, device, tool string, args json.RawMessage, transport time.Duration) (json.RawMessage, error) {
 	if device == "" {
 		// Local status: route to this device's own ID exactly, never by
@@ -139,6 +141,48 @@ func meshToolCall(c *Context, device, tool string, args json.RawMessage, transpo
 		return nil, err
 	}
 	defer s.Close()
+	mode, err := paths.AgentMode(c.String("agent"))
+	if err != nil {
+		return nil, err
+	}
+	if mode == state.ToolsFull {
+		return meshToolCallFull(ctx, s, device, tool, args)
+	}
+	return meshToolCallCompact(ctx, s, device, tool, args)
+}
+
+func meshToolCallFull(ctx context.Context, s *mcp.ClientSession, device, tool string, args json.RawMessage) (json.RawMessage, error) {
+	res, err := s.CallTool(ctx, &mcp.CallToolParams{Name: "mesh_nodes"})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := decodeToolResult(res)
+	if err != nil {
+		return nil, err
+	}
+	var nodes []jobMeshNode
+	if err := json.Unmarshal(raw, &nodes); err != nil {
+		return nil, fmt.Errorf("read mesh_nodes: %w", err)
+	}
+	target, err := resolveJobTarget(nodes, device)
+	if err != nil {
+		return nil, err
+	}
+	res, err = s.CallTool(ctx, &mcp.CallToolParams{Name: target.Handle + "__" + tool, Arguments: args})
+	if err != nil {
+		return nil, err
+	}
+	if res.IsError {
+		return nil, errors.New(toolErrorText(res))
+	}
+	raw, err = json.Marshal(res.StructuredContent)
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		return nil, fmt.Errorf("call %s returned no result", tool)
+	}
+	return raw, nil
+}
+
+func meshToolCallCompact(ctx context.Context, s *mcp.ClientSession, device, tool string, args json.RawMessage) (json.RawMessage, error) {
 	var argObj map[string]any
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &argObj); err != nil {
@@ -157,6 +201,76 @@ func meshToolCall(c *Context, device, tool string, args json.RawMessage, transpo
 		return nil, fmt.Errorf("mesh_call %s returned no result", tool)
 	}
 	return raw, nil
+}
+
+// jobMeshNode is one mesh_nodes entry: the handle namespaces the device's
+// tools as <handle>__<tool> in full mode.
+type jobMeshNode struct {
+	Handle string `json:"handle"`
+	Name   string `json:"name"`
+	ID     string `json:"id"`
+}
+
+// resolveJobTarget maps what was typed (a handle, a name, the ID, or a unique
+// ID prefix) to one device: exact IDs and handles win over ambiguous names,
+// and ambiguity fails rather than guessing.
+func resolveJobTarget(nodes []jobMeshNode, ref string) (jobMeshNode, error) {
+	ref = strings.TrimSpace(ref)
+	lower := strings.ToLower(ref)
+	for tier := 0; tier < 4; tier++ {
+		selected, count := 0, 0
+		for i, n := range nodes {
+			match := false
+			switch tier {
+			case 0:
+				match = strings.EqualFold(n.ID, ref)
+			case 1:
+				match = n.Handle == lower
+			case 2:
+				match = strings.EqualFold(n.Name, ref)
+			case 3:
+				match = len(lower) >= 4 && strings.HasPrefix(strings.ToLower(n.ID), lower)
+			}
+			if match {
+				selected, count = i, count+1
+			}
+		}
+		switch count {
+		case 0:
+		case 1:
+			return nodes[selected], nil
+		default:
+			return jobMeshNode{}, fmt.Errorf("%q matches %d devices; use the handle or exact ID from mesh_nodes", ref, count)
+		}
+	}
+	have := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		have = append(have, n.Handle)
+	}
+	return jobMeshNode{}, fmt.Errorf("no device %q on this mesh (have: %s)", ref, strings.Join(have, ", "))
+}
+
+// decodeToolResult renders a successful tool result as its structured JSON:
+// the single text payload when present, else the structured content. A tool
+// error becomes a plain failure with the device's message.
+func decodeToolResult(res *mcp.CallToolResult) (json.RawMessage, error) {
+	if res == nil {
+		return nil, fmt.Errorf("the device returned no result")
+	}
+	if res.IsError {
+		return nil, fmt.Errorf("%s", toolErrorText(res))
+	}
+	if texts := callTexts(res); len(texts) == 1 {
+		return json.RawMessage([]byte(texts[0])), nil
+	}
+	if res.StructuredContent != nil {
+		raw, err := json.Marshal(res.StructuredContent)
+		if err != nil {
+			return nil, fmt.Errorf("the device returned an unreadable result: %w", err)
+		}
+		return json.RawMessage(raw), nil
+	}
+	return nil, fmt.Errorf("the device returned an unreadable result")
 }
 
 func mustMeshCallArgs(device, tool string, args map[string]any) json.RawMessage {
