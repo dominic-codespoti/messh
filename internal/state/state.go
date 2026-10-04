@@ -68,8 +68,12 @@ func (p Paths) BrowserDir() string       { return filepath.Join(p.Root, "browser
 func (p Paths) SchedulesFile() string    { return filepath.Join(p.Root, "schedules.json") }
 
 // Config is the persisted node configuration. Command-line flags override it.
+// Empty Listen/Local mean the built-in defaults; `messh node config set`
+// manages them and `messh node` applies flag, then configured, then default.
 type Config struct {
-	Name string `json:"name"`
+	Name   string `json:"name"`
+	Listen string `json:"listen"`
+	Local  string `json:"local"`
 }
 
 // LoadConfig returns the stored config, or a zero Config if none exists yet.

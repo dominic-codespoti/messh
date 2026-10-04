@@ -118,15 +118,16 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	if opts.MeshAddr == "" {
-		opts.MeshAddr = DefaultMeshAddr
-	}
-	if opts.LocalAddr == "" {
-		opts.LocalAddr = DefaultLocalAddr
-	}
-
 	cfg, err := opts.Paths.LoadConfig()
 	if err != nil {
+		return nil, err
+	}
+	opts.MeshAddr = cmp.Or(opts.MeshAddr, cfg.Listen, DefaultMeshAddr)
+	opts.LocalAddr = cmp.Or(opts.LocalAddr, cfg.Local, DefaultLocalAddr)
+	if err := state.ValidateListenAddress(opts.MeshAddr); err != nil {
+		return nil, err
+	}
+	if err := state.ValidateLocalAddress(opts.LocalAddr); err != nil {
 		return nil, err
 	}
 	name := cmp.Or(opts.Name, cfg.Name, defaultName())
@@ -232,7 +233,7 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 	n.remoteJobs.start()
 	n.startCatalog()
 	n.startBrowser()
-	n.rebuildTools()
+	n.startDesktopTargets()
 	n.gateway = gateway.New(n, n.build.Version, log.With("component", "gateway"))
 	ro.OnChange(n.gateway.Sync)
 	if err := n.startFiles(); err != nil {
