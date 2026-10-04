@@ -141,7 +141,11 @@ func meshToolCall(c *Context, device, tool string, args json.RawMessage, transpo
 		return nil, err
 	}
 	defer s.Close()
-	mode, err := paths.AgentMode(c.String("agent"))
+	agent := c.String("agent")
+	if agent == "" {
+		agent = "cli"
+	}
+	mode, err := paths.AgentMode(agent)
 	if err != nil {
 		return nil, err
 	}
