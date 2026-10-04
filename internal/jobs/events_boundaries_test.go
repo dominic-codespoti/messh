@@ -37,13 +37,19 @@ func TestEventsCursorUsesOwnerFloorsAndStableIdentity(t *testing.T) {
 	owned := eventJob(t, h, agentA)
 	foreign := eventJob(t, h, other)
 	page, err := h.p.Events(context.Background(), agentA, "", eventRetention, 0)
-	if err != nil || len(page.Events) == 0 { t.Fatalf("initial events: %+v, %v", page, err) }
+	if err != nil || len(page.Events) == 0 {
+		t.Fatalf("initial events: %+v, %v", page, err)
+	}
 	cursor := page.NextCursor
 	appendTestEvents(t, h.p, foreign, 3)
-	if _, err := h.p.Events(context.Background(), agentA, cursor, eventRetention, 0); err != nil { t.Fatalf("global sequence gaps expired owner cursor: %v", err) }
+	if _, err := h.p.Events(context.Background(), agentA, cursor, eventRetention, 0); err != nil {
+		t.Fatalf("global sequence gaps expired owner cursor: %v", err)
+	}
 	renamed := agentA
 	renamed.DeviceName = "renamed device"
-	if _, err := h.p.Events(context.Background(), renamed, cursor, eventRetention, 0); err != nil { t.Fatalf("display-name change invalidated cursor: %v", err) }
+	if _, err := h.p.Events(context.Background(), renamed, cursor, eventRetention, 0); err != nil {
+		t.Fatalf("display-name change invalidated cursor: %v", err)
+	}
 
 	// Keep one old retained job while pruning a different owned job. Its newer
 	// owner floor must expire the cursor even though the first job has old events.
@@ -52,8 +58,12 @@ func TestEventsCursorUsesOwnerFloorsAndStableIdentity(t *testing.T) {
 	appendTestEvents(t, h.p, pruned, eventRetention+1)
 	var expired *CursorExpiredError
 	_, err = h.p.Events(context.Background(), agentA, stale, eventRetention, 0)
-	if !errors.As(err, &expired) { t.Fatalf("cursor before pruned floor: got %v, want expiration", err) }
-	if owned == pruned { t.Fatal("test jobs unexpectedly identical") }
+	if !errors.As(err, &expired) {
+		t.Fatalf("cursor before pruned floor: got %v, want expiration", err)
+	}
+	if owned == pruned {
+		t.Fatal("test jobs unexpectedly identical")
+	}
 }
 
 func TestEventsAppendFailurePreservesRetainedHistoryAndFloor(t *testing.T) {
@@ -67,28 +77,40 @@ func TestEventsAppendFailurePreservesRetainedHistoryAndFloor(t *testing.T) {
 	p.Close()
 	p = newDurableProvider(t, paths, writer, nil)
 	j := p.jobs[id]
-	if j == nil { t.Fatal("fixture job was not restored") }
+	if j == nil {
+		t.Fatal("fixture job was not restored")
+	}
 	appendTestEvents(t, p, j, eventRetention)
 	before, err := p.Events(context.Background(), agentA, "", eventRetention, 0)
-	if err != nil || len(before.Events) != eventRetention { t.Fatalf("before append: %d events, %v", len(before.Events), err) }
+	if err != nil || len(before.Events) != eventRetention {
+		t.Fatalf("before append: %d events, %v", len(before.Events), err)
+	}
 	priorFloor, priorSeq := j.EventDroppedThrough, p.nextEventSeq
 	jobFile := filepath.Join(paths.JobsDir(), id, "job.json")
 	writer.arm(1, func(path string, _ []byte) bool { return strings.Contains(path, jobFile) })
 	p.mu.Lock()
 	err = p.appendEventLocked(j, "failure")
 	p.mu.Unlock()
-	if err == nil { t.Fatal("append unexpectedly succeeded despite injected durable write failure") }
+	if err == nil {
+		t.Fatal("append unexpectedly succeeded despite injected durable write failure")
+	}
 	if len(j.Events) != eventRetention || j.EventDroppedThrough != priorFloor || p.nextEventSeq != priorSeq {
 		t.Fatalf("failed append changed ring/floor/sequence: len=%d floor=%d seq=%d", len(j.Events), j.EventDroppedThrough, p.nextEventSeq)
 	}
 	after, err := p.Events(context.Background(), agentA, before.NextCursor, eventRetention, 0)
-	if err != nil || len(after.Events) != 0 { t.Fatalf("failed append changed visible history: %+v, %v", after, err) }
+	if err != nil || len(after.Events) != 0 {
+		t.Fatalf("failed append changed visible history: %+v, %v", after, err)
+	}
 	p.mu.Lock()
 	err = p.appendEventLocked(j, "recovered")
 	p.mu.Unlock()
-	if err != nil { t.Fatalf("append did not recover after writer restored: %v", err) }
+	if err != nil {
+		t.Fatalf("append did not recover after writer restored: %v", err)
+	}
 	got, err := p.Events(context.Background(), agentA, before.NextCursor, eventRetention, 0)
-	if err != nil || len(got.Events) != 1 || got.Events[0].Type != "recovered" { t.Fatalf("recovered cursor: %+v, %v", got, err) }
+	if err != nil || len(got.Events) != 1 || got.Events[0].Type != "recovered" {
+		t.Fatalf("recovered cursor: %+v, %v", got, err)
+	}
 }
 
 func TestEventsDeletionFloorSurvivesRestartAndRemainsOwnerScoped(t *testing.T) {
@@ -99,20 +121,34 @@ func TestEventsDeletionFloorSurvivesRestartAndRemainsOwnerScoped(t *testing.T) {
 	h.p.mu.Lock()
 	err := h.p.appendDeletionEventLocked(owned)
 	h.p.mu.Unlock()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	paths := h.paths
 	deletedSequence := h.p.tombstoneEvents[len(h.p.tombstoneEvents)-1].Sequence
 	h.p.Close()
 	restored := newDurableProvider(t, paths, nil, nil)
 	page, err := restored.Events(context.Background(), agentA, stale, eventRetention, 0)
 	var expired *CursorExpiredError
-	if !errors.As(err, &expired) { t.Fatalf("deleted owner persisted floor not enforced: page=%+v err=%v", page, err) }
+	if !errors.As(err, &expired) {
+		t.Fatalf("deleted owner persisted floor not enforced: page=%+v err=%v", page, err)
+	}
 	other := provider.Caller{DeviceID: "dev-b", Agent: "omp"}
 	private, err := restored.Events(context.Background(), other, stale, eventRetention, 0)
-	if err == nil || private.Events != nil { t.Fatalf("foreign caller accepted owner cursor: %+v, %v", private, err) }
+	if err == nil || private.Events != nil {
+		t.Fatalf("foreign caller accepted owner cursor: %+v, %v", private, err)
+	}
 	fresh, err := restored.Events(context.Background(), agentA, encodeEventCursor(owned.Owner, deletedSequence-1), eventRetention, 0)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	found := false
-	for _, e := range fresh.Events { if e.Type == "deleted" && e.JobID == owned.ID { found = true } }
-	if !found { t.Fatalf("restored owner cannot see deleted event: %+v", fresh.Events) }
+	for _, e := range fresh.Events {
+		if e.Type == "deleted" && e.JobID == owned.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("restored owner cannot see deleted event: %+v", fresh.Events)
+	}
 }

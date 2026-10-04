@@ -22,6 +22,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"messh/internal/state"
+	"messh/internal/wslroute"
 )
 
 //go:embed wslscripts/wsl-route.ps1 wslscripts/wsl-start.ps1
@@ -206,10 +207,8 @@ func wslPlanRefresh(ctx context.Context, cfg state.WSLTargetConfig) (state.WSLTa
 	return cfg, previous, addr != previous, nil
 }
 
-// classifyWSLPortproxy is pure for testing: netsh prints rows like
-// "192.168.1.31  7521  172.25.172.58  7521". Only the exact LAN->guest row is
-// fine; an unrelated row on the same listen address+port is a collision. The
-// guest IP is re-resolved from ARP at apply time, never pinned in metadata.
+// classifyWSLPortproxy is pure for collision checks. A private guest-IP row
+// at this listen address/port is replaceable because NAT addresses move.
 func classifyWSLPortproxy(netsh string, cfg state.WSLTargetConfig) string {
 	wantPort := strconv.Itoa(cfg.MeshPort)
 	for _, line := range strings.Split(netsh, "\n") {
@@ -218,32 +217,15 @@ func classifyWSLPortproxy(netsh string, cfg state.WSLTargetConfig) string {
 			continue
 		}
 		listenAddr, listenPort, connectAddr, connectPort := fields[0], fields[1], fields[2], fields[3]
-		if listenPort != wantPort {
+		if listenAddr != cfg.HostAddress || listenPort != wantPort {
 			continue
 		}
-		if listenAddr == cfg.HostAddress && connectPort == wantPort && isWSLGuestIP(connectAddr) && connectAddr != cfg.HostAddress {
+		if connectPort == wantPort && connectAddr != cfg.HostAddress && wslroute.IsGuestIPv4(connectAddr) {
 			continue
 		}
-		if listenAddr == cfg.HostAddress {
-			return fmt.Sprintf("portproxy %s:%s forwards to %s:%s instead of the live WSL guest IP: remove it with netsh, then re-run `messh wsl refresh` elevated", listenAddr, listenPort, connectAddr, connectPort)
-		}
-		// Only rows on our LAN listen address matter: another listen address
-		// with the same port is a separate binding, not a collision.
+		return fmt.Sprintf("portproxy %s:%s forwards to %s:%s instead of a private WSL guest address: remove it with netsh, then re-run messh wsl refresh elevated", listenAddr, listenPort, connectAddr, connectPort)
 	}
 	return ""
-}
-
-// isWSLGuestIP reports a WSL NAT guest address (not loopback, not broadcast).
-func isWSLGuestIP(s string) bool {
-	addr, err := netip.ParseAddr(strings.TrimSpace(s))
-	if err != nil || !addr.Is4() {
-		return false
-	}
-	b := addr.As4()
-	if b[3] == 0 || b[3] == 255 {
-		return false
-	}
-	return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168)
 }
 
 // wslFirewallInspectScript reports a collision string (empty when fine) for
@@ -417,9 +399,15 @@ func wslEnsureLogonTaskIn(ctx context.Context, cfg state.WSLTargetConfig, script
 	return true, nil
 }
 
-// wslApplyMachineRoute prefers the secured SYSTEM route task when its
-// admin-owned config is current, and otherwise installs everything elevated
-// through one visible UAC prompt. It returns (applied, taskStarted).
+// wslApplyMachineRouteForSetup always replaces the secured script and task so
+// a newly installed binary cannot leave an older resolver active.
+func wslApplyMachineRouteForSetup(ctx context.Context, c *Context, cfg state.WSLTargetConfig) (bool, bool, error) {
+	return wslApplyMachineRouteElevated(ctx, c, cfg)
+}
+
+// wslApplyMachineRoute reuses the secured SYSTEM task when its admin-owned
+// config is current, otherwise it installs everything through UAC. Refresh
+// retains this reuse path; setup uses wslApplyMachineRouteForSetup.
 func wslApplyMachineRoute(ctx context.Context, c *Context, cfg state.WSLTargetConfig) (bool, bool, error) {
 	if started, err := wslTriggerRouteTask(ctx, cfg); err == nil && started {
 		if ok, err := wslVerifyRoute(ctx, cfg); err == nil && ok {
@@ -465,25 +453,18 @@ func wslTriggerRouteTask(ctx context.Context, cfg state.WSLTargetConfig) (bool, 
 	return true, nil
 }
 
-// wslVerifyRoute checks the expected portproxy row exists. Firewall scope is
-// verified by the elevated installer; the unprivileged caller cannot read it
-// reliably, so a present proxy row plus no error is success.
+// wslVerifyRoute requires the exact destination currently observed on the
+// default WSL2 NAT adapter, not any plausible private address.
 func wslVerifyRoute(ctx context.Context, cfg state.WSLTargetConfig) (bool, error) {
 	out, err := wslRunHidden(ctx, wslSystemPath("netsh.exe"), "interface", "portproxy", "show", "v4tov4")
 	if err != nil {
 		return false, err
 	}
-	wantPort := strconv.Itoa(cfg.MeshPort)
-	for _, line := range strings.Split(wslDecodeConsole(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
-		}
-		if fields[0] == cfg.HostAddress && fields[1] == wantPort && fields[3] == wantPort && isWSLGuestIP(fields[2]) {
-			return true, nil
-		}
+	guestAddress, err := wslroute.ResolveGuestAddress(ctx)
+	if err != nil {
+		return false, err
 	}
-	return false, nil
+	return wslroute.PortproxyStatus(wslDecodeConsole(out), cfg.HostAddress, cfg.MeshPort, guestAddress) == "present", nil
 }
 
 // wslApplyMachineRouteElevated stages the administrator-owned ProgramData
@@ -493,10 +474,11 @@ func wslVerifyRoute(ctx context.Context, cfg state.WSLTargetConfig) (bool, error
 // written by this unprivileged process only into the UAC command line (never
 // into a file the elevated side executes).
 func wslApplyMachineRouteElevated(ctx context.Context, c *Context, cfg state.WSLTargetConfig) (bool, bool, error) {
-	routeScript, err := wslScripts.ReadFile("wslscripts/wsl-route.ps1")
+	routeBody, err := wslScripts.ReadFile("wslscripts/wsl-route.ps1")
 	if err != nil {
 		return false, false, err
 	}
+	routeScript := append([]byte(wslroute.GuestAddressScript+"\n"), routeBody...)
 	routeCfg := map[string]any{
 		"host_address":  cfg.HostAddress,
 		"mesh_port":     cfg.MeshPort,

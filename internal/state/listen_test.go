@@ -15,7 +15,6 @@ func writeConfigFile(t *testing.T, p Paths, data string) {
 	}
 }
 
-
 func TestConfigLegacyWithoutListenersLoadsEmpty(t *testing.T) {
 	p := Paths{Root: t.TempDir()}
 	writeConfigFile(t, p, `{"name":"legacy","unknown":"keep"}`+"\n")
@@ -53,5 +52,3 @@ func TestValidateLocalAddressLoopbackInvariant(t *testing.T) {
 		}
 	}
 }
-
-

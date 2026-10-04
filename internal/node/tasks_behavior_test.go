@@ -65,12 +65,12 @@ type taskBehaviorGetParams struct {
 
 type taskBehaviorGetResult struct {
 	mcp.ResultBase
-	ResultType     string `json:"resultType"`
-	TaskID         string `json:"taskId"`
-	Status         string `json:"status"`
-	StatusMessage  string `json:"statusMessage,omitempty"`
-	CreatedAt      string `json:"createdAt"`
-	LastUpdatedAt  string `json:"lastUpdatedAt"`
+	ResultType    string `json:"resultType"`
+	TaskID        string `json:"taskId"`
+	Status        string `json:"status"`
+	StatusMessage string `json:"statusMessage,omitempty"`
+	CreatedAt     string `json:"createdAt"`
+	LastUpdatedAt string `json:"lastUpdatedAt"`
 }
 
 func taskBehaviorCreatedAt(t *testing.T, raw string) string {
@@ -124,7 +124,7 @@ func taskBehaviorSession(t *testing.T, n *Node, token string, capture *taskBehav
 		HTTPClient: &http.Client{Transport: taskBehaviorTransport{
 			token: token, capture: capture,
 		}},
-		MaxRetries:          -1,
+		MaxRetries:           -1,
 		DisableStandaloneSSE: true,
 	}, nil)
 	if err != nil {

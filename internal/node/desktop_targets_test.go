@@ -119,7 +119,7 @@ func TestStoppedConfirmedOnlyByBothInventories(t *testing.T) {
 // failure), so no test fabricates that path.
 func TestFailedInventoryNeverReportsStopped(t *testing.T) {
 	rep := classifyDesktopTargets(testWSLCfg(), desktopFacts{
-		InvErr: "wsl --list --quiet failed: exit status 1",
+		InvErr:   "wsl --list --quiet failed: exit status 1",
 		Loopback: "refused", LoopTarget: "127.0.0.1:7521",
 	}, "win-id", "desktop", "windows")
 	if rep.Guest.State != "unknown" {
@@ -208,7 +208,7 @@ func TestReportCarriesIDsAndLoopbackTarget(t *testing.T) {
 	rep := classifyDesktopTargets(cfg, desktopFacts{
 		Distros: []string{"Ubuntu"}, Running: []string{"Ubuntu"},
 		Loopback: "reachable", LoopTarget: "192.168.1.31:7521",
-		PortProxy: "present",
+		CurrentGuest: "172.25.172.59", PortProxy: "present",
 	}, "win-id", "desktop", "windows")
 	if len(rep.Targets) != 2 || rep.Targets[0].ID != "win-id" || rep.Targets[1].ID != "wsl-id-1" {
 		t.Fatalf("targets = %+v, want windows win-id + wsl wsl-id-1", rep.Targets)
@@ -216,28 +216,23 @@ func TestReportCarriesIDsAndLoopbackTarget(t *testing.T) {
 	if rep.Route.ProxyTarget != "192.168.1.31:7521" {
 		t.Fatalf("proxy target = %q, want captured LAN address", rep.Route.ProxyTarget)
 	}
-	if !strings.Contains(rep.Route.GuestAddressNote, "informational only") {
-		t.Fatalf("guest address note missing: %q", rep.Route.GuestAddressNote)
+	if rep.Route.CurrentGuest != "172.25.172.59" {
+		t.Fatalf("current guest address = %q, want observed address rather than captured %q", rep.Route.CurrentGuest, cfg.GuestAddress)
+	}
+	if rep.Route.GuestAddressErr != "" {
+		t.Fatalf("unexpected guest address error: %q", rep.Route.GuestAddressErr)
 	}
 }
 
-// Portproxy parsing: a LAN->private-guest row counts; loopback or broadcast
-// connect addresses do not (the WSL localhost relay only listens on ::1).
-func TestClassifyPortproxy(t *testing.T) {
-	show := "Listen Address  Port  Connect Address  Port\r\n" +
-		"192.168.1.31  7521  172.25.172.58  7521\r\n"
-	if classifyDesktopPortproxy(show, 7521) != "present" {
-		t.Fatalf("guest-IP row not present:\n%s", show)
+func TestRouteReportsGuestResolutionFailure(t *testing.T) {
+	rep := classifyDesktopTargets(testWSLCfg(), desktopFacts{
+		PortProxy: "unknown", GuestAddressErr: "ambiguous WSL NAT neighbors",
+	}, "win-id", "desktop", "windows")
+	if rep.Route.GuestAddressErr != "ambiguous WSL NAT neighbors" {
+		t.Fatalf("guest address error = %q, want resolver evidence", rep.Route.GuestAddressErr)
 	}
-	stale := "Listen Address  Port  Connect Address  Port\r\n" +
-		"192.168.1.31  7521  127.0.0.1  7521\r\n"
-	if classifyDesktopPortproxy(stale, 7521) != "absent" {
-		t.Fatalf("loopback row counted as present:\n%s", stale)
-	}
-	other := "Listen Address  Port  Connect Address  Port\r\n" +
-		"192.168.1.31  9999  127.0.0.1  9999\r\n"
-	if classifyDesktopPortproxy(other, 7521) != "absent" {
-		t.Fatalf("other-port row counted:\n%s", other)
+	if !strings.Contains(rep.Route.Detail, "ambiguous WSL NAT neighbors") {
+		t.Fatalf("route detail omits resolver evidence: %q", rep.Route.Detail)
 	}
 }
 
@@ -247,7 +242,7 @@ func TestClassifyPortproxy(t *testing.T) {
 func TestDesktopTargetsCallSemantics(t *testing.T) {
 	unconfigured := &desktopTargetsProvider{
 		selfID: "win-id", selfName: "desktop",
-		load:   func() (*state.WSLTargetConfig, error) { return nil, nil },
+		load: func() (*state.WSLTargetConfig, error) { return nil, nil },
 		probe: func(context.Context, *state.WSLTargetConfig) desktopFacts {
 			t.Error("probe ran for an unconfigured target")
 			return desktopFacts{}
@@ -270,7 +265,7 @@ func TestDesktopTargetsCallSemantics(t *testing.T) {
 
 	corrupt := &desktopTargetsProvider{
 		selfID: "win-id", selfName: "desktop",
-		load:   func() (*state.WSLTargetConfig, error) { return nil, errCorruptTarget },
+		load: func() (*state.WSLTargetConfig, error) { return nil, errCorruptTarget },
 	}
 	res, err = corrupt.Call(context.Background(), DesktopTargetsToolName, nil, provider.Caller{})
 	if err != nil {

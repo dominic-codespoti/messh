@@ -23,10 +23,10 @@ func init() {
 		Help:    "Runs the messh node in the foreground until interrupted (Ctrl-C / SIGTERM).",
 		Output:  `one startup object {id, name, mesh, local, state}`,
 		Waits:   "runs until stopped",
-	Flags: func(fs *flag.FlagSet) {
-		fs.String("name", "", "device name (default: stored name, else hostname)")
-		fs.String("listen", "", "address peers connect to in `ADDR` (default: stored address, else "+node.DefaultMeshAddr+")")
-		fs.String("local", "", "loopback address for agents and the CLI in `ADDR` (default: stored address, else "+node.DefaultLocalAddr+")")
+		Flags: func(fs *flag.FlagSet) {
+			fs.String("name", "", "device name (default: stored name, else hostname)")
+			fs.String("listen", "", "address peers connect to in `ADDR` (default: stored address, else "+node.DefaultMeshAddr+")")
+			fs.String("local", "", "loopback address for agents and the CLI in `ADDR` (default: stored address, else "+node.DefaultLocalAddr+")")
 			fs.Bool("no-discovery", false, "do not announce or listen on the LAN")
 			fs.String("discovery-iface", "", "comma-separated interface names for discovery (default: all suitable) in `NAMES`")
 			fs.Bool("v", false, "debug logging")

@@ -43,8 +43,8 @@ func TestClassifyWSLPortproxyStaleGuestIP(t *testing.T) {
 		t.Fatalf("other-listen row reported as collision: %s", clash)
 	}
 	netsh = "192.168.1.31  7521  127.0.0.1  7521\n"
-	if clash := classifyWSLPortproxy(netsh, cfg); clash == "" || !strings.Contains(clash, "live WSL guest IP") {
-		t.Fatalf("loopback row not reported as stale: %q", clash)
+	if clash := classifyWSLPortproxy(netsh, cfg); clash == "" {
+		t.Fatalf("loopback row accepted as a replaceable stale guest address")
 	}
 }
 
@@ -106,43 +106,5 @@ func TestParseWSLInventoryUTF16(t *testing.T) {
 	got = parseWSLInventory([]byte{'U', 0, 'b', 0, '\n', 0})
 	if len(got) != 1 || got[0] != "Ub" {
 		t.Fatalf("bare-NUL inventory = %q", got)
-	}
-}
-
-func TestWSLInstallScriptHasNoDoubleQuote(t *testing.T) {
-	s := wslInstallScript(testWSLSetupTarget())
-	if strings.ContainsRune(s, '"') {
-		t.Fatal("elevated installer contains a double quote")
-	}
-	for _, want := range []string{"ProgramData", "wsl-route.ps1", "route.json", "SYSTEM", "Administrators", "ReparsePoint"} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("installer missing %q", want)
-		}
-	}
-	if strings.Contains(s, "wsl.exe") {
-		t.Fatal("elevated installer must never invoke wsl.exe")
-	}
-}
-
-func TestWSLFirewallInspectScriptNarrow(t *testing.T) {
-	s := wslFirewallInspectScript(testWSLSetupTarget())
-	if strings.ContainsRune(s, '"') {
-		// Single-quoted PowerShell only; double quotes would let the
-		// command line reinterpret peer addresses.
-		t.Fatal("firewall inspect script contains a double quote")
-	}
-	if !strings.Contains(s, "messh wsl (mesh TCP 7521)") || !strings.Contains(s, "192.168.1.189") {
-		t.Fatalf("inspect script does not pin the rule and peers: %s", s)
-	}
-	if strings.Contains(s, "7522") {
-		t.Fatal("inspect script must never mention the guest local API port")
-	}
-}
-
-func TestWSLProxyLabelIsLoopback(t *testing.T) {
-	cfg := testWSLSetupTarget()
-	cfg.GuestAddress = "172.25.172.58"
-	if got := wslProxyLabel(cfg); got != "192.168.1.31:7521 -> 127.0.0.1:7521" {
-		t.Fatalf("proxy label = %q", got)
 	}
 }

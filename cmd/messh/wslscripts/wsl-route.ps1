@@ -4,7 +4,7 @@
 # networking: one netsh v4tov4 portproxy row (LAN mesh port to the live guest
 # IP:same port) and one narrow inbound firewall rule (TCP mesh port from
 # explicit peers on Private). Never runs wsl.exe and never reads user-writable
-# state. The guest IP is re-resolved from ARP on every apply, never pinned.
+# state. Resolves guest through the default WSL2 NAT adapter neighbor table.
 $ErrorActionPreference = 'Stop'
 
 function Fail([string]$msg) { throw $msg }
@@ -51,17 +51,7 @@ foreach ($p in $peers) {
 }
 $peersCsv = $peers -join ','
 
-$guestIp = $null
-foreach ($line in @(arp -a 2>&1)) {
-  $t = [string]$line
-  if ($t -match '(172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+)') {
-    $candidate = $Matches[1]
-    if ($candidate -notlike '*.255') { $guestIp = $candidate }
-  }
-}
-if ([string]::IsNullOrWhiteSpace($guestIp)) {
-  Fail('no live WSL guest IP in ARP; boot the distro first')
-}
+try { $guestIp = Get-MesshWSLGuestAddress } catch { Fail("cannot resolve default WSL2 NAT guest: $($_.Exception.Message)") }
 
 & $netsh interface portproxy delete v4tov4 listenaddress=$hostAddr listenport=$portText | Out-Null
 & $netsh interface portproxy add v4tov4 listenaddress=$hostAddr listenport=$portText connectaddress=$guestIp connectport=$portText

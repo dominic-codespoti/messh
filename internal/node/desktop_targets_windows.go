@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"messh/internal/state"
+	"messh/internal/wslroute"
 )
 
 // probeDesktopTargets is the Windows inventory: fixed no-start wsl.exe
@@ -43,7 +44,15 @@ func probeDesktopTargets(ctx context.Context, cfg *state.WSLTargetConfig) deskto
 	} else {
 		f.IfaceName, f.Current = name, current
 	}
-	f.PortProxy = desktopPortproxyLabel(ctx, cfg.MeshPort)
+	guest, guestErr := wslroute.ResolveGuestAddress(ctx)
+	if guestErr != nil {
+		f.GuestAddressErr = guestErr.Error()
+	} else if !wslroute.IsGuestIPv4(guest) {
+		f.GuestAddressErr = "resolver returned an invalid private IPv4 address"
+	} else {
+		f.CurrentGuest = guest
+	}
+	f.PortProxy = desktopPortproxyLabel(ctx, cfg, f.CurrentGuest)
 	if desktopValidPort(cfg.MeshPort) && cfg.HostAddress != "" {
 		f.LoopTarget = net.JoinHostPort(cfg.HostAddress, strconv.Itoa(cfg.MeshPort))
 		f.Loopback = desktopDialLabel(ctx, f.LoopTarget)
@@ -67,18 +76,17 @@ func runWSLQuiet(ctx context.Context, argv ...string) ([]string, error) {
 	return parseWSLQuietList(out)
 }
 
-// portproxyLabel reports whether the expected v4tov4 listen on the LAN mesh
-// port to 127.0.0.1 exists (present), is missing (absent), or the netsh read
-// itself failed (unknown — not evidence either way).
-func desktopPortproxyLabel(ctx context.Context, meshPort int) string {
-	if !desktopValidPort(meshPort) {
+// desktopPortproxyLabel compares netsh with the exact captured host route and
+// currently observed WSL NAT guest address.
+func desktopPortproxyLabel(ctx context.Context, cfg *state.WSLTargetConfig, guestAddress string) string {
+	if cfg == nil || !desktopValidPort(cfg.MeshPort) {
 		return "unknown"
 	}
 	out, err := runHiddenNoWindow(ctx, "netsh.exe", "interface", "portproxy", "show", "v4tov4")
 	if err != nil {
 		return "unknown"
 	}
-	return classifyDesktopPortproxy(string(out), meshPort)
+	return wslroute.PortproxyStatus(string(out), cfg.HostAddress, cfg.MeshPort, guestAddress)
 }
 
 // runHiddenNoWindow runs a console program with no window flash and returns

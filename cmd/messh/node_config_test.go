@@ -23,8 +23,6 @@ func nodeConfigJSON(t *testing.T, dir string, args ...string) (map[string]any, s
 	return doc, stderr.String()
 }
 
-
-
 func TestNodeConfigSetSparsePreservesUnsuppliedFields(t *testing.T) {
 	dir := t.TempDir()
 	paths := state.Paths{Root: dir}

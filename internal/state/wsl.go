@@ -24,11 +24,11 @@ const (
 // WSLTargetConfig is the selected WSL target persisted in the Windows owner's
 // state directory. HostAddress is the last captured explicit Windows LAN
 // address and is stale-capable across DHCP; HostInterfaceIndex selects the
-// adapter used to re-resolve it. GuestAddress is optional captured
-// information and is never the portproxy destination: the proxy always
-// forwards Windows LAN MeshPort to literal 127.0.0.1:MeshPort, which the
-// proven native WSL localhost forwarder carries to the guest. GuestState is
-// guest-native and never a /mnt/c Windows shared path. No credentials or
+// LAN adapter used to compare that captured address. GuestAddress is optional
+// captured information and is never the portproxy destination: the proxy
+// forwards Windows LAN MeshPort directly to the live address observed on the
+// default WSL2 NAT adapter. GuestState is guest-native and never a /mnt/c
+// Windows shared path. No credentials or tokens are persisted here.
 // tokens are persisted here.
 type WSLTargetConfig struct {
 	Distro             string   `json:"distro"`

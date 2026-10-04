@@ -38,46 +38,51 @@ const (
 
 // submitArgs is the job_submit input.
 type submitArgs struct {
-	RequestID string `json:"request_id,omitempty"`
-	Recipe *recipeSelector `json:"recipe,omitempty"`
-	Recovery *recoveryArgs `json:"recovery,omitempty"`
-	Command string `json:"command,omitempty"`
-	Args []string `json:"args,omitempty"`
-	Cwd string `json:"cwd,omitempty"`
-	Env map[string]string `json:"env,omitempty"`
-	Shell bool `json:"shell,omitempty"`
-	Inputs []string `json:"inputs,omitempty"`
-	Workspace string `json:"workspace,omitempty"`
-	Resources Claims `json:"resources,omitempty"`
-	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
-	Label string `json:"label,omitempty"`
+	RequestID      string            `json:"request_id,omitempty"`
+	Recipe         *recipeSelector   `json:"recipe,omitempty"`
+	Recovery       *recoveryArgs     `json:"recovery,omitempty"`
+	Command        string            `json:"command,omitempty"`
+	Args           []string          `json:"args,omitempty"`
+	Cwd            string            `json:"cwd,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	Shell          bool              `json:"shell,omitempty"`
+	Inputs         []string          `json:"inputs,omitempty"`
+	Workspace      string            `json:"workspace,omitempty"`
+	Resources      Claims            `json:"resources,omitempty"`
+	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	Label          string            `json:"label,omitempty"`
 }
-type recipeSelector struct { Name string `json:"name"`; Version string `json:"version"`; Digest string `json:"digest"`; Parameters json.RawMessage `json:"parameters"` }
+type recipeSelector struct {
+	Name       string          `json:"name"`
+	Version    string          `json:"version"`
+	Digest     string          `json:"digest"`
+	Parameters json.RawMessage `json:"parameters"`
+}
 
 // request is a validated job_submit with everything resolved on this host.
 type recoveryArgs struct {
-	Checkpoint string `json:"checkpoint"`
-	Args []string `json:"args"`
+	Checkpoint string   `json:"checkpoint"`
+	Args       []string `json:"args"`
 }
 type request struct {
-	RequestID string
-	Recovery *recoveryArgs
-	RecipeID string
-	RecipeVersion string
-	RecipeDigest string
-	RecipeSnapshot json.RawMessage
+	RequestID        string
+	Recovery         *recoveryArgs
+	RecipeID         string
+	RecipeVersion    string
+	RecipeDigest     string
+	RecipeSnapshot   json.RawMessage
 	RecipeParameters json.RawMessage
-	Path string
-	Args []string
-	Shell bool
-	Line string
-	Workspace string
-	Cwd string
-	Env map[string]string
-	Claims Claims
-	TimeoutSec int
-	Inputs []Input
-	Label string
+	Path             string
+	Args             []string
+	Shell            bool
+	Line             string
+	Workspace        string
+	Cwd              string
+	Env              map[string]string
+	Claims           Claims
+	TimeoutSec       int
+	Inputs           []Input
+	Label            string
 }
 
 func displayArgv(exe string, args []string, shell bool, line string) []string {
@@ -422,26 +427,26 @@ func (p *Provider) hashInputs(r *request, workspace string) error {
 // --- canonical hashing ---
 
 type canonRequest struct {
-	V int `json:"v"`
-	Tool string `json:"tool"`
-	Path string `json:"path"`
-	Args []string `json:"args"`
-	Shell bool `json:"shell"`
-	Line string `json:"line"`
-	Workspace string `json:"workspace"`
-	Cwd string `json:"cwd"`
-	Env [][2]string `json:"env"`
-	GPUs []int `json:"gpus"`
-	VRAMMB int64 `json:"vram_mb"`
-	MemMB int64 `json:"mem_mb"`
-	CPUs int `json:"cpus"`
-	TimeoutSec int `json:"timeout_seconds"`
-	Inputs [][2]string `json:"inputs"`
-	Recovery *recoveryArgs `json:"recovery,omitempty"`
-	RecipeID string `json:"recipe_id,omitempty"`
-	RecipeVersion string `json:"recipe_version,omitempty"`
-	RecipeDigest string `json:"recipe_digest,omitempty"`
-	RecipeSnapshot json.RawMessage `json:"recipe_snapshot,omitempty"`
+	V                int             `json:"v"`
+	Tool             string          `json:"tool"`
+	Path             string          `json:"path"`
+	Args             []string        `json:"args"`
+	Shell            bool            `json:"shell"`
+	Line             string          `json:"line"`
+	Workspace        string          `json:"workspace"`
+	Cwd              string          `json:"cwd"`
+	Env              [][2]string     `json:"env"`
+	GPUs             []int           `json:"gpus"`
+	VRAMMB           int64           `json:"vram_mb"`
+	MemMB            int64           `json:"mem_mb"`
+	CPUs             int             `json:"cpus"`
+	TimeoutSec       int             `json:"timeout_seconds"`
+	Inputs           [][2]string     `json:"inputs"`
+	Recovery         *recoveryArgs   `json:"recovery,omitempty"`
+	RecipeID         string          `json:"recipe_id,omitempty"`
+	RecipeVersion    string          `json:"recipe_version,omitempty"`
+	RecipeDigest     string          `json:"recipe_digest,omitempty"`
+	RecipeSnapshot   json.RawMessage `json:"recipe_snapshot,omitempty"`
 	RecipeParameters json.RawMessage `json:"recipe_parameters,omitempty"`
 }
 
@@ -465,7 +470,7 @@ func (r *request) canon() canonRequest {
 		V: 1, Tool: "job_submit", Path: r.Path, Args: nonNil(r.Args), Shell: r.Shell, Line: r.Line,
 		Workspace: r.Workspace, Cwd: r.Cwd, Env: sortedEnv(r.Env),
 		GPUs: append([]int{}, r.Claims.GPUs...), VRAMMB: r.Claims.VRAMMB, MemMB: r.Claims.MemMB, CPUs: r.Claims.CPUs,
-		TimeoutSec: r.TimeoutSec, Inputs: [][2]string{}, Recovery: r.Recovery, RecipeID:r.RecipeID, RecipeVersion:r.RecipeVersion, RecipeDigest:r.RecipeDigest, RecipeSnapshot:r.RecipeSnapshot, RecipeParameters:r.RecipeParameters,
+		TimeoutSec: r.TimeoutSec, Inputs: [][2]string{}, Recovery: r.Recovery, RecipeID: r.RecipeID, RecipeVersion: r.RecipeVersion, RecipeDigest: r.RecipeDigest, RecipeSnapshot: r.RecipeSnapshot, RecipeParameters: r.RecipeParameters,
 	}
 	for _, in := range r.Inputs {
 		c.Inputs = append(c.Inputs, [2]string{in.Ref, in.SHA256})

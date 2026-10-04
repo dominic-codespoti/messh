@@ -41,6 +41,13 @@ func wslEnsureLogonTask(ctx context.Context, paths state.Paths, cfg state.WSLTar
 	return false, errors.New("WSL host routing is Windows-only")
 }
 
+func wslApplyMachineRouteForSetup(ctx context.Context, c *Context, cfg state.WSLTargetConfig) (bool, bool, error) {
+	_ = ctx
+	_ = c
+	_ = cfg
+	return false, false, errors.New("WSL host routing is Windows-only")
+}
+
 func wslApplyMachineRoute(ctx context.Context, c *Context, cfg state.WSLTargetConfig) (bool, bool, error) {
 	_ = ctx
 	_ = c

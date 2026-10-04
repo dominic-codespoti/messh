@@ -94,13 +94,36 @@ func ValidateSubmission(raw json.RawMessage) error {
 	}
 	if b, ok := o["recipe"]; ok && string(b) != "null" {
 		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(b, &fields); err != nil || fields == nil { return errors.New("recipe must be an object") }
-		for k := range fields { if k != "name" && k != "version" && k != "digest" && k != "parameters" { return fmt.Errorf("unknown recipe selector field %q", k) } }
-		var sel struct { Name string `json:"name"`; Version string `json:"version"`; Digest string `json:"digest"`; Parameters json.RawMessage `json:"parameters"` }
-		dec := json.NewDecoder(bytes.NewReader(b)); dec.DisallowUnknownFields(); if err := dec.Decode(&sel); err != nil { return fmt.Errorf("recipe: %w", err) }
-		if strings.TrimSpace(sel.Name)=="" || strings.TrimSpace(sel.Version)=="" || strings.TrimSpace(sel.Digest)=="" { return errors.New("recipe name, version, and digest are required") }
-		if len(sel.Parameters)==0 || string(sel.Parameters)=="null" { return errors.New("recipe parameters object is required") }
-		for k := range o { if k != "recipe" && k != "request_id" { return fmt.Errorf("job_submit recipe cannot be combined with execution override %q", k) } }
+		if err := json.Unmarshal(b, &fields); err != nil || fields == nil {
+			return errors.New("recipe must be an object")
+		}
+		for k := range fields {
+			if k != "name" && k != "version" && k != "digest" && k != "parameters" {
+				return fmt.Errorf("unknown recipe selector field %q", k)
+			}
+		}
+		var sel struct {
+			Name       string          `json:"name"`
+			Version    string          `json:"version"`
+			Digest     string          `json:"digest"`
+			Parameters json.RawMessage `json:"parameters"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&sel); err != nil {
+			return fmt.Errorf("recipe: %w", err)
+		}
+		if strings.TrimSpace(sel.Name) == "" || strings.TrimSpace(sel.Version) == "" || strings.TrimSpace(sel.Digest) == "" {
+			return errors.New("recipe name, version, and digest are required")
+		}
+		if len(sel.Parameters) == 0 || string(sel.Parameters) == "null" {
+			return errors.New("recipe parameters object is required")
+		}
+		for k := range o {
+			if k != "recipe" && k != "request_id" {
+				return fmt.Errorf("job_submit recipe cannot be combined with execution override %q", k)
+			}
+		}
 	}
 	if b, ok := o["recovery"]; ok && string(b) != "null" {
 		var rm map[string]json.RawMessage

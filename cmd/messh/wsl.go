@@ -27,10 +27,10 @@ func init() {
 			"owner-context logon task that boots the distro and starts its messh user service, then asks " +
 			"Windows for administrator rights (one UAC prompt) to install the administrator-owned ProgramData " +
 			"route script/config and the SYSTEM route-only task plus the portproxy/firewall route itself. " +
-			"The portproxy forwards the Windows LAN mesh port to literal 127.0.0.1:same port (native WSL " +
-			"localhost forwarder); the guest local API port is never forwarded or firewalled. The guest binary " +
-			"and user service must already be installed; this command never installs into the guest, never " +
-			"stores credentials, and never resets networking, shuts down, or resets the distribution. " +
+			"The portproxy forwards the Windows LAN mesh port to the live address resolved from the " +
+			"default WSL2 NAT adapter (same mesh port); the guest local API port is never forwarded " +
+			"or firewalled. The guest binary and user service must already be installed; this command " +
+			"never installs into the guest, stores credentials, or resets networking or the distribution. " +
 			"Re-running setup re-validates, replaces only messh's own rows/tasks, and refuses unrelated collisions.",
 		Flags: func(fs *flag.FlagSet) {
 			wslSetupFlags(fs)
@@ -87,17 +87,17 @@ func wslSetupFlags(fs *flag.FlagSet) {
 
 // wslSetupResult is the --json shape of `wsl setup`.
 type wslSetupResult struct {
-	Distro          string   `json:"distro"`
-	User            string   `json:"user"`
-	Name            string   `json:"name"`
-	ID              string   `json:"id"`
-	GuestState      string   `json:"guest_state"`
-	MeshPort        int      `json:"mesh_port"`
-	LocalPort       int      `json:"local_port"`
-	HostAddress     string   `json:"host_address"`
-	InterfaceIndex  int      `json:"interface_index"`
-	AllowedPeers    []string `json:"allowed_peers"`
-	Tasks           struct {
+	Distro         string   `json:"distro"`
+	User           string   `json:"user"`
+	Name           string   `json:"name"`
+	ID             string   `json:"id"`
+	GuestState     string   `json:"guest_state"`
+	MeshPort       int      `json:"mesh_port"`
+	LocalPort      int      `json:"local_port"`
+	HostAddress    string   `json:"host_address"`
+	InterfaceIndex int      `json:"interface_index"`
+	AllowedPeers   []string `json:"allowed_peers"`
+	Tasks          struct {
 		Logon string `json:"logon"`
 		Route string `json:"route"`
 	} `json:"tasks"`
@@ -161,7 +161,7 @@ func runWSLSetup(c *Context) error {
 	if _, err := wslEnsureLogonTask(ctx, paths, plan); err != nil {
 		return err
 	}
-	applied, taskStarted, err := wslApplyMachineRoute(ctx, c, plan)
+	applied, taskStarted, err := wslApplyMachineRouteForSetup(ctx, c, plan)
 	if err != nil {
 		return err
 	}
@@ -299,7 +299,7 @@ func wslRefreshJSON(cfg state.WSLTargetConfig, previous string, stale, applied, 
 }
 
 func wslProxyLabel(cfg state.WSLTargetConfig) string {
-	return net.JoinHostPort(cfg.HostAddress, strconv.Itoa(cfg.MeshPort)) + " -> 127.0.0.1:" + strconv.Itoa(cfg.MeshPort)
+	return net.JoinHostPort(cfg.HostAddress, strconv.Itoa(cfg.MeshPort)) + " -> resolved WSL NAT guest:" + strconv.Itoa(cfg.MeshPort)
 }
 
 func wslWriteSetupPlan(w io.Writer, cfg state.WSLTargetConfig) {
@@ -307,7 +307,7 @@ func wslWriteSetupPlan(w io.Writer, cfg state.WSLTargetConfig) {
 	fmt.Fprintf(tw, "distro\t%s (user %s)\n", cfg.Distro, cfg.User)
 	fmt.Fprintf(tw, "target\t%s\n", cfg.Name)
 	fmt.Fprintf(tw, "guest state\t%s\n", cfg.GuestState)
-	fmt.Fprintf(tw, "mesh\t%s (native WSL localhost forwarder)\n", wslProxyLabel(cfg))
+	fmt.Fprintf(tw, "mesh\t%s (live adapter-resolved WSL NAT guest)\n", wslProxyLabel(cfg))
 	fmt.Fprintf(tw, "guest local API\t%d (never forwarded or firewalled)\n", cfg.LocalPort)
 	fmt.Fprintf(tw, "peers\t%s on Private\n", strings.Join(cfg.AllowedPeers, ", "))
 	fmt.Fprintf(tw, "tasks\tlogon %s (owner) + route %s (SYSTEM)\n", cfg.TaskName, cfg.RouteTaskName)

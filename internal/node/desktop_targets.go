@@ -163,18 +163,20 @@ func (p *desktopTargetsProvider) Call(ctx context.Context, tool string, args jso
 // desktopFacts is everything the platform layer observed. The zero value
 // means nothing was observed: classify reports unknown, never stopped.
 type desktopFacts struct {
-	Unavailable bool     // not a Windows host: wsl.exe inventory has no meaning here
-	InvErr      string   // wsl --list failed: a failed inventory proves nothing
-	Distros     []string // wsl --list --quiet (successful inventory only)
-	Running     []string // wsl --list --running --quiet (successful inventory only)
-	IfaceName   string   // selected host interface name, when readable
-	IfaceErr    string   // selected host interface unreadable
-	Current     []string // current addresses of the selected interface
-	PortProxy   string   // present | absent | unknown
-	Loopback    string   // loopback dial: reachable | refused | timeout | error | not_probed
-	LoopTarget  string   // loopback address dialed ("" when not probed)
-	LAN         string   // LAN dial: same vocabulary (host-local observation)
-	LANTarget   string   // LAN address dialed ("" when not probed)
+	Unavailable     bool     // not a Windows host: wsl.exe inventory has no meaning here
+	InvErr          string   // wsl --list failed: a failed inventory proves nothing
+	Distros         []string // wsl --list --quiet (successful inventory only)
+	Running         []string // wsl --list --running --quiet (successful inventory only)
+	IfaceName       string   // selected host interface name, when readable
+	IfaceErr        string   // selected host interface unreadable
+	Current         []string // current addresses of the selected interface
+	CurrentGuest    string   // current private guest address resolved from WSL NAT adapter
+	GuestAddressErr string   // current guest observation failed or was ambiguous
+	PortProxy       string   // present | absent | unknown
+	Loopback        string   // loopback dial: reachable | refused | timeout | error | not_probed
+	LoopTarget      string   // loopback address dialed ("" when not probed)
+	LAN             string   // LAN dial: same vocabulary (host-local observation)
+	LANTarget       string   // LAN address dialed ("" when not probed)
 }
 
 // desktopTargetsReport is the desktop_targets result: observed facts with
@@ -218,6 +220,8 @@ type desktopRoute struct {
 	LANTarget        string   `json:"lan_target,omitempty"`
 	LANTCP           string   `json:"lan_tcp,omitempty"`
 	GuestAddressNote string   `json:"guest_address_note,omitempty"`
+	CurrentGuest     string   `json:"current_guest_address,omitempty"`
+	GuestAddressErr  string   `json:"guest_address_error,omitempty"`
 	Detail           string   `json:"detail,omitempty"`
 }
 
@@ -354,23 +358,25 @@ func classifyDesktopTargets(cfg *state.WSLTargetConfig, f desktopFacts, selfID, 
 		)
 	}
 
-	// Route section: stale-capable metadata. The proxy forwards the LAN mesh
-	// port to the live guest IP re-resolved from ARP at apply time; the
-	// captured guest address stays informational only and is never pinned.
+	// Route section: stale-capable metadata. The live proxy destination is
+	// resolved from the default WSL2 NAT adapter, never global ARP; the captured
+	// guest address stays informational only and is never pinned.
 	route := desktopRoute{
-		CapturedHost:   cfg.HostAddress,
-		InterfaceIndex: cfg.HostInterfaceIndex,
-		InterfaceName:  f.IfaceName,
-		CurrentHost:    desktopNonNilStrings(f.Current),
-		PortProxy:      f.PortProxy,
-		LANTarget:      f.LANTarget,
-		LANTCP:         f.LAN,
+		CapturedHost:    cfg.HostAddress,
+		InterfaceIndex:  cfg.HostInterfaceIndex,
+		InterfaceName:   f.IfaceName,
+		CurrentHost:     desktopNonNilStrings(f.Current),
+		PortProxy:       f.PortProxy,
+		CurrentGuest:    f.CurrentGuest,
+		GuestAddressErr: f.GuestAddressErr,
+		LANTarget:       f.LANTarget,
+		LANTCP:          f.LAN,
 	}
 	if meshPort {
 		route.ProxyTarget = net.JoinHostPort(cfg.HostAddress, strconv.Itoa(cfg.MeshPort))
 	}
 	if cfg.GuestAddress != "" {
-		route.GuestAddressNote = "captured guest address " + cfg.GuestAddress + " is informational only; the live guest IP is re-resolved from ARP at apply time, never pinned"
+		route.GuestAddressNote = "captured guest address " + cfg.GuestAddress + " is informational only; the current guest IP is resolved from the default WSL2 NAT adapter, never global ARP or pinned from this capture"
 	}
 	stale, staleDetail := desktopCapturedStale(cfg.HostAddress, f.Current, f.IfaceErr, f.Unavailable)
 	route.Stale = stale
@@ -383,13 +389,16 @@ func classifyDesktopTargets(cfg *state.WSLTargetConfig, f desktopFacts, selfID, 
 	details = append(details, staleDetail)
 	switch f.PortProxy {
 	case "present":
-		details = append(details, "portproxy LAN "+route.ProxyTarget+" to the live guest IP present on the host (guest IP re-resolved from ARP at apply time)")
+		details = append(details, "portproxy LAN "+route.ProxyTarget+" to current WSL guest "+f.CurrentGuest+" present on the host (destination matched against the default WSL2 NAT adapter)")
 	case "absent":
 		details = append(details, "portproxy LAN "+route.ProxyTarget+" to the live guest IP absent on the host: refresh the host route with: messh wsl refresh")
 	case "unknown":
 		if !f.Unavailable {
 			details = append(details, "portproxy state unknown")
 		}
+	}
+	if f.GuestAddressErr != "" && !f.Unavailable {
+		details = append(details, "current WSL guest address unavailable: "+f.GuestAddressErr)
 	}
 	if cfg.LocalPort != 0 {
 		details = append(details, "guest local API port "+strconv.Itoa(cfg.LocalPort)+" is never proxied or firewalled: it stays unexposed")
@@ -496,47 +505,6 @@ func decodeUTF16LE(b []byte) string {
 	}
 	return string(utf16.Decode(u16))
 }
-// classifyPortproxy is pure for testing: netsh prints table rows like
-// "192.168.1.31  7521  172.25.172.58  7521". A row whose listen port AND
-// connect port are the mesh port with a private IPv4 connect address counts
-// as present; anything else for the mesh port is absent (the guest IP is
-// re-resolved from ARP at apply time, never pinned).
-func classifyDesktopPortproxy(netsh string, meshPort int) string {
-	wantPort := strconv.Itoa(meshPort)
-	for _, line := range strings.Split(netsh, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
-		}
-		listenPort, connectAddr, connectPort := fields[1], fields[2], fields[3]
-		if listenPort != wantPort || connectPort != wantPort {
-			continue
-		}
-		if isPrivateIPv4(connectAddr) {
-			return "present"
-		}
-	}
-	return "absent"
-}
-
-func isPrivateIPv4(s string) bool {
-	parts := strings.Split(strings.TrimSpace(s), ".")
-	if len(parts) != 4 {
-		return false
-	}
-	var b [4]int
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 || n > 255 {
-			return false
-		}
-		b[i] = n
-	}
-	if b[3] == 0 || b[3] == 255 {
-		return false
-	}
-	return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168)
-}
 
 func desktopContainsName(list []string, name string) bool {
 	for _, s := range list {
@@ -555,7 +523,6 @@ func desktopNonNilStrings(s []string) []string {
 	}
 	return s
 }
-
 
 // dialLabel makes one bounded TCP observation and reports only what
 // happened: reachable, refused, timeout, or a bare error. It never claims

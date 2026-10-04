@@ -101,4 +101,3 @@ func validHostname(host string) bool {
 	}
 	return true
 }
-

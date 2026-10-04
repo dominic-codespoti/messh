@@ -451,8 +451,13 @@ func (p *Provider) callDelete(raw json.RawMessage, c provider.Caller) (*mcp.Call
 	}
 	if err := p.appendDeletionEventLocked(j); err != nil {
 		j.deleting = false
-		if hasReceipt { receipt.Deleted = false; _ = p.saveSubmissionLocked(a.JobID, receipt) }
-		if !shared { delete(p.deleting, ws) }
+		if hasReceipt {
+			receipt.Deleted = false
+			_ = p.saveSubmissionLocked(a.JobID, receipt)
+		}
+		if !shared {
+			delete(p.deleting, ws)
+		}
 		p.mu.Unlock()
 		return nil, fmt.Errorf("persist job deletion event: %w", err)
 	}

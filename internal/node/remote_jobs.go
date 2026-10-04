@@ -495,7 +495,7 @@ func submissionResult(record *remoteJobRecord) *mcp.CallToolResult {
 	if record.Cancel && !isFinalRemoteJob(record.State) {
 		result, err := provider.JSONResult(map[string]any{
 			"job_id": record.ID, "state": "cancellation_pending", "workspace": "ws/" + remoteJobWorkspace(record),
-			"message": "cancellation request is saved; target has not confirmed the job stopped",
+			"message":          "cancellation request is saved; target has not confirmed the job stopped",
 			"origin_submitted": record.OriginSubmitted,
 		})
 		if err == nil {
@@ -540,7 +540,6 @@ func syntheticStatus(record *remoteJobRecord) *mcp.CallToolResult {
 	}
 	return result
 }
-
 
 func (o *remoteJobOutbox) call(ctx context.Context, deviceID, tool string, args json.RawMessage, agent string) (*mcp.CallToolResult, error) {
 	fingerprint, authorized := o.agentFingerprint(agent)

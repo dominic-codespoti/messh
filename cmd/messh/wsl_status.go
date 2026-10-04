@@ -44,9 +44,9 @@ func init() {
 			fs.String("agent", "", "act as registered agent `NAME` (default: the CLI itself)")
 			fs.Duration("timeout", 30*time.Second, "give up after `DURATION`")
 		},
-		Output:  `the desktop_targets report {host, guest, route, targets, policy, recovery}`,
+		Output:   `the desktop_targets report {host, guest, route, targets, policy, recovery}`,
 		Examples: []string{"messh wsl status", "messh wsl status dompc-win"},
-		Run:     runWSLStatus,
+		Run:      runWSLStatus,
 	})
 }
 
@@ -111,6 +111,7 @@ func wslStatusRemote(c *Context, device string, transport time.Duration) error {
 	}
 	return c.Emit(raw, func(w io.Writer) { writeWSLStatus(w, raw) })
 }
+
 // meshToolCall routes one ClassInfo tool call through the gateway in the
 // CLI's own mode: full mode calls the exact namespaced tool, compact mode
 // sends a mesh_call envelope for the gateway to resolve. Transport failures

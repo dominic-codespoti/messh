@@ -137,10 +137,33 @@ its own state (`/home/dom/.local/state/messh`). Persist non-default listens
 with `messh node config set` (updater launchers stay
 `messh node --state ROOT`); expose WSL on the LAN with `messh wsl setup` and
 inspect it with `messh wsl status [WINDOWS_DEVICE]`. The host route forwards
-the LAN mesh port to the live guest IP re-resolved from ARP at apply time
-(never pinned), behind one narrow Private firewall rule for explicit peers;
-the guest local API port is never forwarded or firewalled. A stopped guest is
+the LAN mesh port to the private guest IPv4 resolved from the default WSL2
+NAT adapter, behind one narrow Private firewall rule for explicit peers; the
+guest local API port is never forwarded or firewalled. A stopped guest is
 confirmed only by successful host inventories, never by TCP alone.
+
+Routing and status share a host-native resolver: it reads `Get-NetAdapter`
+and the selected interface's `Get-NetNeighbor` inventory, never global ARP
+or a previously captured guest IP. It requires exactly one Up adapter named
+`vEthernet (WSL)` or `vEthernet (WSL (Hyper-V firewall))`, with exactly one
+distinct eligible private IPv4 neighbor with a resolved unicast MAC address.
+Missing or ambiguous observations abort route application before modifying
+the proxy or firewall. This automatic route is for default WSL2 NAT, not
+mirrored networking or renamed/custom virtual adapters. Neighbor-cache
+observations do not authenticate the guest; pinned mesh TLS remains the
+identity boundary.
+
+Status marks a proxy `present` only when the captured listen address, both
+mesh ports, and the currently resolved guest destination all match. A
+plausible proxy with an unresolved guest is `unknown`, not proof of a valid
+route. Reports include `current_guest_address` when observed and
+`guest_address_error` when resolution fails; `guest_address_note` remains
+informational about an optional stale capture. Status never starts WSL.
+
+After updating a Windows binary, re-run `messh wsl setup` with the target
+flags and approve its UAC prompt to replace the installed route script/task.
+Updating the binary alone does not update installed PowerShell copies;
+`messh wsl refresh` may reuse the existing secured task.
 
 ## Tools
 
