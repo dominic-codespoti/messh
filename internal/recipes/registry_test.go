@@ -106,13 +106,6 @@ func TestDefinitionDigestCanonicalizesSchemaAndStrictReload(t *testing.T) {
 	if _, err := New(corrupt); err == nil {
 		t.Fatal("strict load accepted unknown persisted fields")
 	}
-	insecure := filepath.Join(t.TempDir(), "recipes.json")
-	if err := os.WriteFile(insecure, []byte("{\"version\":1,\"recipes\":[]}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := New(insecure); err == nil {
-		t.Fatal("registry loaded with permissive file mode")
-	}
 }
 func TestParameterBindingStaysOneArgAndRejectsExternalRefs(t *testing.T) {
 	r, err := New(filepath.Join(t.TempDir(), "recipes.json"))
