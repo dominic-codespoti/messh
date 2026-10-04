@@ -63,6 +63,14 @@ Call a tool
 `messh call desktop__node_info --json` — tool name, then the arguments as one
 JSON object: `messh call desktop__job_status '{"job_id": "..."}' --json`.
 
+On a Windows+WSL desktop, select the target explicitly: `dompc-wsl` for Linux
+compute, `dompc-win` for native Windows commands, services, and browser work.
+Never route by bare task name or retry through another interpreter/SSH.
+Budgets are per node and never aggregate; the two targets share one physical
+GPU, so avoid heavy GPU work on both at once. Inspect with
+`messh wsl status [WINDOWS_DEVICE]` (read-only; TCP alone never proves the
+intended service).
+
 What is waiting for approval?
 
 `messh approvals --json` — report the requests to the user. Do not answer

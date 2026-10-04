@@ -54,6 +54,10 @@ messh skill show
 
 Commands that reveal secrets, grant access, or change pairing/approval policy require explicit human direction; agent guidance is not a substitute for owner review. See [Security](#security-model).
 
+Persist a device name and non-default listens with `messh node config set`
+(sparse updates, validated before save, restart to apply); updater launchers
+stay `messh node --state ROOT`.
+
 ## Update in place
 
 ```sh
@@ -114,8 +118,7 @@ marks that network Private (only use it for your own home or office network; Pub
 stays right for cafés and hotels) and is checked against the networks Windows
 reports. Afterwards it re-runs the doctor's interface and firewall checks.
 
-**Linux.** `messh firewall allow` prints the commands for the active firewall and
-never runs sudo itself, for example:
+**Linux.**
 
 ```sh
 sudo ufw allow from 192.168.1.0/24 to any port 7519 proto tcp
@@ -125,6 +128,19 @@ sudo firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" 
 sudo firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" port port="7519" protocol="udp" accept'
 sudo firewall-cmd --reload
 ```
+
+### Windows + WSL desktop targets
+
+Run one node per OS with separate identities and ports: `dompc-win` on the
+default mesh/local ports, `dompc-wsl` in Ubuntu on mesh 7521/local 7522 with
+its own state (`/home/dom/.local/state/messh`). Persist non-default listens
+with `messh node config set` (updater launchers stay
+`messh node --state ROOT`); expose WSL on the LAN with `messh wsl setup` and
+inspect it with `messh wsl status [WINDOWS_DEVICE]`. The host route forwards
+the LAN mesh port to the live guest IP re-resolved from ARP at apply time
+(never pinned), behind one narrow Private firewall rule for explicit peers;
+the guest local API port is never forwarded or firewalled. A stopped guest is
+confirmed only by successful host inventories, never by TCP alone.
 
 ## Tools
 
@@ -161,6 +177,13 @@ The mode change applies on the agent's next request.
 | `<device>__files_list` / `files_stat` / `files_mkdir` / `files_delete` | browse and tidy the device's `ws/` and `artifacts/` |
 | `<device>__browser_navigate` / `browser_snapshot` / `browser_click` / `browser_type` / ... | drive a web browser on the device; each website needs the owner's approval (see Browser) |
 | `<device>__browser_status` | whether the browser tools work on the device; never starts the browser |
+
+Desktop Linux work runs on the WSL target (`dompc-wsl`); native Windows
+commands, services, and browser work run on the Windows target (`dompc-win`).
+Selection is always explicit; budgets are per node and never aggregate across
+Windows+WSL, which share one physical GPU. `desktop_targets` (via
+`messh wsl status [WINDOWS_DEVICE]`) reports the captured target with
+observed host/guest state and explicit recovery commands.
 
 ## Services
 
