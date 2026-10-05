@@ -65,9 +65,17 @@ On the client device, create an explicit agent identity:
 messh agent add assistant --json
 ```
 
-The result has exactly five fields: `agent`, `mode`, `created`, `mcp_url`, and `token_command`. Configure Streamable HTTP MCP with the returned `mcp_url`; run `token_command` at runtime and send its output as `Authorization: Bearer <token>`. Do not copy or persist the token. Client configuration syntax is client-specific; use the explicit [omp](integrations/omp/README.md) or [pi](integrations/pi/README.md) adapter guide where applicable. Generic messh setup has no implicit harness target. To install the bundled shell skill, choose its destination explicitly with `messh skill install --dir "$HOME/.agents/skills"`; harness-specific installs must likewise name their target (for example, `--for pi`).
+The output from `agent add` has five fields: `agent`, `mode`, `created`, `mcp_url`, and `token_command`. Any Streamable HTTP MCP client can connect using the returned URL, registered opaque agent identity, and an `Authorization: Bearer <token>` header. Registration and authentication are explicit; they do not automatically grant permissions. Client configuration syntax is client-specific. Use secure secret management or a runtime command mechanism supported by your client; never publish or persist bearer tokens in shared configuration.
 
-Verify with a read-only call: discover devices with `mesh_nodes`, find tools with `mesh_tools`, and invoke `mesh_call` (for example, `node_info`). The CLI also supports `messh status`, `messh tools`, and `messh call DEVICE__TOOL --json`.
+For example, a client that accepts URL and header settings could be configured with `mcp_url` as its endpoint and `Authorization` as a header whose value is `Bearer <runtime token>`. This describes the connection values, not a universal client configuration-file format or token-command extension.
+
+Install the bundled skill by explicitly choosing its directory:
+
+```sh
+messh skill install --dir "$HOME/.agents/skills"
+```
+
+In default compact mode, use `mesh_nodes` to discover devices, `mesh_tools` to inspect schemas, and `mesh_call` to invoke a tool (for example, `node_info`). Full mode instead exposes target tools directly as `<device>__<tool>`. Both modes work with generic MCP clients; no adapter is required. Optional MCP Tasks negotiation is not required for ordinary jobs. The CLI also supports `messh status`, `messh tools`, and `messh call DEVICE__TOOL --json`.
 
 ## Durable jobs
 

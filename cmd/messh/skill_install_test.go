@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestSkillInstallRequiresExplicitTargetAndInstallsDirectory(t *testing.T) {
+func TestSkillInstallRequiresExplicitTargetAndPreservesExistingContent(t *testing.T) {
 	stateDir := t.TempDir()
 	code, _, errOut := agentTestRun(t, stateDir, "skill", "install")
 	if code != exitUsage || errOut == "" {
@@ -14,29 +14,23 @@ func TestSkillInstallRequiresExplicitTargetAndInstallsDirectory(t *testing.T) {
 	}
 
 	skillsDir := filepath.Join(t.TempDir(), "custom skills")
+	target := filepath.Join(skillsDir, skillName, "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userContent := []byte("user-managed skill\n")
+	if err := os.WriteFile(target, userContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	code, _, errOut = agentTestRun(t, stateDir, "skill", "install", "--dir", skillsDir)
-	if code != exitOK {
-		t.Fatalf("skill install --dir exit = %d, stderr = %s", code, errOut)
+	if code != exitUsage || errOut == "" {
+		t.Fatalf("skill install over different content = %d, stderr %q; want usage error", code, errOut)
 	}
-	assertInstalledSkill(t, filepath.Join(skillsDir, skillName, "SKILL.md"))
-
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	code, _, errOut = agentTestRun(t, stateDir, "skill", "install", "--for", "pi")
-	if code != exitOK {
-		t.Fatalf("skill install --for pi exit = %d, stderr = %s", code, errOut)
-	}
-	assertInstalledSkill(t, filepath.Join(home, ".pi", "agent", "skills", skillName, "SKILL.md"))
-}
-
-func assertInstalledSkill(t *testing.T, path string) {
-	t.Helper()
-	got, err := os.ReadFile(path)
+	got, err := os.ReadFile(target)
 	if err != nil {
-		t.Fatalf("read installed skill %s: %v", path, err)
+		t.Fatal(err)
 	}
-	if string(got) != skillMarkdown {
-		t.Fatalf("installed skill at %s differs from bundled content", path)
+	if string(got) != string(userContent) {
+		t.Fatalf("existing skill changed without --force: %q", got)
 	}
 }

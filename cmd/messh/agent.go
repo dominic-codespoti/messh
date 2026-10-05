@@ -193,7 +193,7 @@ func agentAdd(c *Context, name, mode string) error {
 		fmt.Fprintf(&b, "and reaches each device's tools with mesh_tools (search) and mesh_call (run), keeping its context small.\n")
 	}
 	fmt.Fprintf(&b, "Switch with `messh agent mode %s %s%s`; it applies from the agent's next request.\n", name, other, stateFlag(stateDir))
-	fmt.Fprintf(&b, "Teach a shell-capable agent the messh CLI: messh skill install --for omp|pi|agents\n")
+	fmt.Fprintf(&b, "Teach a shell-capable agent the messh CLI: messh skill install --dir DIR\n")
 
 	return c.Emit(map[string]any{
 		"agent":         name,

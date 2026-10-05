@@ -36,6 +36,9 @@ func (p *Provider) listTabs(ctx context.Context) ([]Tab, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot tell which website the browser is showing: %v", err)
 	}
+	if res.IsError {
+		return nil, fmt.Errorf("cannot tell which website the browser is showing: browser_tabs list returned an error")
+	}
 	tabs, err := ParseTabs(textOf(res))
 	if err != nil {
 		return nil, fmt.Errorf("cannot tell which website the browser is showing: %v", err)
@@ -156,7 +159,9 @@ func (p *Provider) vet(ctx context.Context, caller provider.Caller, pl *plan) (w
 	tabs, err := p.listTabs(ctx)
 	if err != nil {
 		// Cannot tell where the page is: do not return its content.
-		p.resetCurrent()
+		if !p.resetCurrent() {
+			return "the result was withheld because the browser's state could not be checked; the browser was stopped because the tab could not be reset", nil
+		}
 		return fmt.Sprintf("the result was withheld because the browser's state could not be checked (%v); the tab was reset to a blank page", err), nil
 	}
 	var denied []Tab
@@ -210,7 +215,9 @@ func (p *Provider) vet(ctx context.Context, caller provider.Caller, pl *plan) (w
 	slices.SortFunc(items, func(a, b item) int { return b.tab.Index - a.tab.Index })
 	var reasons []string
 	for _, it := range items {
-		p.remediate(it.tab)
+		if !p.remediate(it.tab) {
+			return "the result was withheld because the browser could not reset an unapproved tab; the browser was stopped", nil
+		}
 		if it.tab.Current {
 			reasons = append(reasons, it.why)
 		} else {
@@ -238,7 +245,7 @@ func (pl *plan) flagged(t Tab) bool {
 
 // remediate removes an unapproved page from the browser: extra tabs are
 // closed, the current tab is sent to about:blank.
-func (p *Provider) remediate(t Tab) {
+func (p *Provider) remediate(t Tab) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cfg := p.config()
@@ -249,13 +256,17 @@ func (p *Provider) remediate(t Tab) {
 	} else {
 		tool, args = "browser_tabs", fmt.Sprintf(`{"action":"close","index":%d}`, t.Index)
 	}
-	if _, err := p.up.call(ctx, cfg, tool, json.RawMessage(args)); err != nil {
+	res, err := p.up.call(ctx, cfg, tool, json.RawMessage(args))
+	if err == nil && res.IsError {
+		err = fmt.Errorf("browser returned an error while resetting a tab")
+	}
+	if err != nil {
 		p.log.Warn("could not reset an unapproved tab; stopping the browser", "error", err)
 		p.up.stop()
+		return false
 	}
+	return true
 }
-
-// resetCurrent blanks the current tab without knowing what it shows.
-func (p *Provider) resetCurrent() {
-	p.remediate(Tab{Current: true})
+func (p *Provider) resetCurrent() bool {
+	return p.remediate(Tab{Current: true})
 }

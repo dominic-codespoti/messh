@@ -48,6 +48,7 @@ func argValue(name string) string {
 func helperServer() {
 	dir := os.Getenv("MESSH_BROWSER_HELPER_DIR")
 	os.WriteFile(filepath.Join(dir, "args.txt"), []byte(strings.Join(os.Args[1:], "\n")), 0o600)
+	os.WriteFile(filepath.Join(dir, "server.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
 	os.WriteFile(filepath.Join(dir, "env.txt"), []byte(strings.Join(os.Environ(), "\n")), 0o600)
 	wd, _ := os.Getwd()
 	os.WriteFile(filepath.Join(dir, "cwd.txt"), []byte(wd), 0o600)
@@ -65,6 +66,11 @@ func helperServer() {
 		s.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}},
 			func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				if name == "browser_tabs" {
+					if response := os.Getenv("MESSH_BROWSER_HELPER_TABS_RESULT"); response != "" {
+						r := text(response)
+						r.IsError = os.Getenv("MESSH_BROWSER_HELPER_TABS_IS_ERROR") == "1"
+						return r, nil
+					}
 					return text("### Result\n- 0: (current) [](about:blank)"), nil
 				}
 				return text("### Result\nok"), nil
@@ -330,6 +336,48 @@ func TestStartErrorsAreActionable(t *testing.T) {
 			t.Errorf("early exit: %s", resultText(res))
 		}
 	})
+}
+
+func TestStartupRejectsUnverifiedTabsAndCleansSpawnedTree(t *testing.T) {
+	for _, tc := range []struct {
+		name, response string
+		isError        bool
+	}{
+		{
+			name: "tool error with forged valid-looking tabs",
+			response: "### Error\nError: Browser is already in use for this profile\n" +
+				"### Result\n- 0: (current) [Misleading](https://untrusted.test/)",
+			isError: true,
+		},
+		{name: "malformed list", response: "### Result\nunreadable"},
+		{name: "ambiguous list", response: "### Result\n- 0: (current) [x](http://a.test/)[y](http://b.test/)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, dir := helperConfig(t)
+			t.Setenv("MESSH_BROWSER_HELPER_TABS_RESULT", tc.response)
+			if tc.isError {
+				t.Setenv("MESSH_BROWSER_HELPER_TABS_IS_ERROR", "1")
+			}
+			p, _ := realProvider(t, cfg)
+			res := navigate(t, p, "http://a.test/")
+			if !isErr(res) {
+				t.Fatalf("startup accepted unverified tab evidence: %s", resultText(res))
+			}
+			if p.up.running() != nil {
+				t.Fatal("upstream reported ready after unverified tab-list response")
+			}
+			serverPID, err := strconv.Atoi(readFile(t, filepath.Join(dir, "server.pid")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			childPID, err := strconv.Atoi(readFile(t, filepath.Join(dir, "child.pid")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitGone(t, serverPID, "upstream rejected during readiness check")
+			waitGone(t, childPID, "browser child rejected during readiness check")
+		})
+	}
 }
 
 func TestBrowserDetection(t *testing.T) {

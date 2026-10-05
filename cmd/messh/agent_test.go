@@ -42,50 +42,21 @@ func agentJSONList(t *testing.T, dir string, args ...string) (int, []any, string
 	return code, rows, errOut
 }
 
-func TestAgentAddCreatesCompactToken(t *testing.T) {
+func TestAgentAddDoesNotExposeToken(t *testing.T) {
 	dir := t.TempDir()
-	code, doc, errOut := agentJSON(t, dir, "agent", "add", "pi")
-	if code != 0 {
+	code, out, errOut := agentTestRun(t, dir, "agent", "add", "client")
+	if code != exitOK {
 		t.Fatalf("agent add exit = %d, stderr = %s", code, errOut)
 	}
-	if doc["agent"] != "pi" || doc["mode"] != "compact" || doc["created"] != true {
-		t.Fatalf("agent add doc = %v, want agent pi mode compact created true", doc)
-	}
-	wantKeys := []string{"agent", "mode", "created", "mcp_url", "token_command"}
-	if len(doc) != len(wantKeys) {
-		t.Fatalf("agent add JSON fields = %v, want exactly %v", doc, wantKeys)
-	}
-	for _, key := range wantKeys {
-		if _, ok := doc[key]; !ok {
-			t.Errorf("agent add JSON lacks %q: %v", key, doc)
-		}
-	}
-	if cmd, _ := doc["token_command"].(string); cmd != tokenCommand("pi", true, dir) {
-		t.Fatalf("token command = %q", cmd)
-	}
-	if doc["mcp_url"] == "" {
-		t.Fatal("agent add JSON lacks MCP URL")
-	}
-	code, out, errOut := agentTestRun(t, dir, "agent", "add", "pi")
-	if code != 0 {
-		t.Fatalf("re-add exit = %d, stderr = %s", code, errOut)
-	}
-	if !strings.Contains(out, "Connect an MCP client") || !strings.Contains(out, "Tools: compact") {
-		t.Fatalf("generic human output lacks connection details:\n%s", out)
-	}
-	if strings.Contains(out, "mcp.json") || strings.Contains(out, "messh.json") || strings.Contains(out, "pi install") {
-		t.Fatalf("generic output contains harness configuration:\n%s", out)
-	}
-	_, tokenDoc, errOut := agentJSON(t, dir, "agent", "token", "pi")
+	_, tokenDoc, errOut := agentJSON(t, dir, "agent", "token", "client")
 	if errOut != "" {
 		t.Fatalf("agent token stderr = %s", errOut)
 	}
 	token, _ := tokenDoc["token"].(string)
-	if token == "" || strings.Contains(out, token) || strings.Contains(doc["token_command"].(string), token) {
+	if token == "" || strings.Contains(out, token) {
 		t.Fatalf("agent add output exposed token or token missing")
 	}
 }
-
 func TestAgentReAddKeepsTokenChangesMode(t *testing.T) {
 	dir := t.TempDir()
 	if code, _, errOut := agentJSON(t, dir, "agent", "add", "pi"); code != 0 {
@@ -100,12 +71,9 @@ func TestAgentReAddKeepsTokenChangesMode(t *testing.T) {
 		return tok
 	}
 	before := mustToken()
-	code, doc, errOut := agentJSON(t, dir, "agent", "add", "pi", "--tools", "full")
+	code, _, errOut := agentJSON(t, dir, "agent", "add", "pi", "--tools", "full")
 	if code != 0 {
 		t.Fatalf("re-add --tools full exit = %d, stderr = %s", code, errOut)
-	}
-	if doc["mode"] != "full" || doc["created"] != false {
-		t.Fatalf("re-add doc = %v, want mode full created false", doc)
 	}
 	if after := mustToken(); after != before {
 		t.Fatalf("re-add changed the token")

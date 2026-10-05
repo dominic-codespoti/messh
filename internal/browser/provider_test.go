@@ -396,6 +396,105 @@ func TestFailClosedWhenOriginUnknown(t *testing.T) {
 	}
 }
 
+func TestTabListToolErrorsFailClosed(t *testing.T) {
+	n := newNode(t, baseConfig())
+	fb := n.env.fb
+	fb.addSite("http://a.test/", "Private A")
+	fb.addSite("http://b.test/secret", "Private B")
+	n.allowOnce()
+	if res := n.call("browser_navigate", map[string]any{"url": "http://a.test/"}); isErr(res) {
+		t.Fatal(resultText(res))
+	}
+	n.surf.reset()
+
+	// Even a valid-looking Result cannot be used when the upstream marked it as
+	// an error; the page-bound action must not reach the browser or approval UI.
+	fb.mu.Lock()
+	fb.badTabs = "### Result\n- 0: (current) [Private B](http://b.test/secret)"
+	fb.badTabsIsError = true
+	fb.mu.Unlock()
+	before := fb.called("browser_snapshot")
+	res := n.call("browser_snapshot", map[string]any{})
+	if !isErr(res) || strings.Contains(resultText(res), "Private B") {
+		t.Fatalf("tool-error tab list authenticated an origin: %s", resultText(res))
+	}
+	if fb.called("browser_snapshot") != before || len(n.surf.asked()) != 0 {
+		t.Fatal("page-bound action or approval was reached with an error tab list")
+	}
+
+	// After a page-changing action, the same error must withhold the action's
+	// page content and reset the active tab.
+	fb.mu.Lock()
+	fb.badTabs = ""
+	fb.badTabsIsError = false
+	fb.links["e1"] = "http://b.test/secret"
+	fb.breakAfterClick = "### Result\n- 0: (current) [Private B](http://b.test/secret)"
+	fb.clickTabsError = true
+	fb.mu.Unlock()
+	n.allowOnce()
+	res = n.call("browser_click", map[string]any{"element": "open private page", "target": "e1"})
+	txt := resultText(res)
+	if !isErr(res) || strings.Contains(txt, "Private B") || strings.Contains(txt, "Page URL:") {
+		t.Fatalf("tool-error tab list leaked post-action content: %s", txt)
+	}
+	if got := fb.current().url; got != "about:blank" {
+		t.Errorf("active tab not reset after tab-list tool error: %s", got)
+	}
+}
+
+func TestFailedRemediationWithholdsAndStops(t *testing.T) {
+	t.Run("blank navigation", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.DenyOrigins = []string{"b.test"}
+		n := newNode(t, cfg)
+		fb := n.env.fb
+		fb.addSite("http://a.test/", "Approved")
+		fb.addSite("http://b.test/private", "Private Page")
+		fb.links["e1"] = "http://b.test/private"
+		n.allowOnce()
+		if res := n.call("browser_navigate", map[string]any{"url": "http://a.test/"}); isErr(res) {
+			t.Fatal(resultText(res))
+		}
+		fb.mu.Lock()
+		fb.blankResetError = true
+		fb.mu.Unlock()
+
+		res := n.call("browser_click", map[string]any{"element": "open private page", "target": "e1"})
+		txt := resultText(res)
+		if !isErr(res) || strings.Contains(txt, "Private Page") || strings.Contains(txt, "Page URL:") {
+			t.Fatalf("failed blank remediation did not withhold the result: %s", txt)
+		}
+		if n.env.p.up.running() != nil {
+			t.Fatal("browser automation remained active after failed blank remediation")
+		}
+	})
+
+	t.Run("popup close", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg.DenyOrigins = []string{"ads.test"}
+		n := newNode(t, cfg)
+		fb := n.env.fb
+		fb.addSite("http://a.test/", "Approved")
+		fb.addSite("http://ads.test/private", "Private Popup")
+		fb.popups["e9"] = "http://ads.test/private"
+		n.allowOnce()
+		if res := n.call("browser_navigate", map[string]any{"url": "http://a.test/"}); isErr(res) {
+			t.Fatal(resultText(res))
+		}
+		fb.mu.Lock()
+		fb.closeTabError = true
+		fb.mu.Unlock()
+
+		res := n.call("browser_click", map[string]any{"element": "open popup", "target": "e9"})
+		txt := resultText(res)
+		if !isErr(res) || strings.Contains(txt, "Private Popup") || strings.Contains(txt, "ads.test/private") || strings.Contains(txt, "Page URL:") {
+			t.Fatalf("failed popup-close remediation did not withhold the result: %s", txt)
+		}
+		if n.env.p.up.running() != nil {
+			t.Fatal("browser automation remained active after failed popup close")
+		}
+	})
+}
 func TestNoPageYet(t *testing.T) {
 	n := newNode(t, baseConfig())
 	n.allowOnce()

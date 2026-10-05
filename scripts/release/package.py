@@ -3,7 +3,6 @@
 import argparse
 import gzip
 import hashlib
-import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -142,7 +141,6 @@ def build(dist, staging):
     epoch = int(subprocess.check_output(["git", "log", "-1", "--format=%ct"], text=True))
     dist.mkdir(parents=True, exist_ok=False)
     staging.mkdir(parents=True, exist_ok=False)
-    integration = subprocess.check_output(["git", "archive", "HEAD", "integrations/pi"])
     assets = []
     flags = "-s -w " + " ".join(
         f"-X messh/internal/buildinfo.{key.title()}={value[key]}"
@@ -159,8 +157,6 @@ def build(dist, staging):
         output.chmod(0o755)
         for source in ("README.md", "LICENSE"):
             shutil.copyfile(source, stage / source)
-        with tarfile.open(fileobj=io.BytesIO(integration)) as archive:
-            archive.extractall(stage, filter="data")
         destination = dist / name
         archive_tree(stage, destination, epoch)
         assets.append(dict(os=goos, arch=goarch, name=name, size=destination.stat().st_size,

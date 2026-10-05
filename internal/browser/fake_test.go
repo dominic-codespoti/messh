@@ -43,7 +43,11 @@ type fakeBrowser struct {
 	uploadTxt       []string          // their contents at call time
 	pngSize         int               // bytes of the fake screenshot
 	badTabs         string            // when set, browser_tabs list returns this text instead
+	badTabsIsError  bool              // marks that result as an upstream tool error
 	breakAfterClick string            // when set, a click makes browser_tabs list return this text
+	clickTabsError  bool              // mark the post-click tab-list response as an upstream tool error
+	blankResetError bool              // fail the about:blank remediation with an MCP tool error
+	closeTabError   bool              // fail tab-close remediation with an MCP tool error
 	rootsAdvertised bool              // a client advertised the roots capability
 	srv             *httptest.Server
 }
@@ -170,7 +174,9 @@ func (f *fakeBrowser) handle(tool string, raw json.RawMessage) *mcp.CallToolResu
 		switch str("action") {
 		case "list":
 			if f.badTabs != "" {
-				return text(f.badTabs)
+				r := text(f.badTabs)
+				r.IsError = f.badTabsIsError
+				return r
 			}
 			return text("### Result\n" + f.tabList())
 		case "new":
@@ -185,6 +191,11 @@ func (f *fakeBrowser) handle(tool string, raw json.RawMessage) *mcp.CallToolResu
 			f.cur = i
 			return text("### Result\n" + f.tabList())
 		case "close":
+			if f.closeTabError {
+				r := text("### Error\nreset failed")
+				r.IsError = true
+				return r
+			}
 			i := f.cur
 			if v, ok := a["index"].(float64); ok {
 				i = int(v)
@@ -200,6 +211,11 @@ func (f *fakeBrowser) handle(tool string, raw json.RawMessage) *mcp.CallToolResu
 		}
 	case "browser_navigate":
 		u := str("url")
+		if u == "about:blank" && f.blankResetError {
+			r := text("### Error\nreset failed")
+			r.IsError = true
+			return r
+		}
 		if strings.HasPrefix(u, "file:") {
 			r := text("### Error\nError: Access to \"file:\" protocol is blocked. Attempted URL: \"" + u + "\"")
 			r.IsError = true
@@ -222,6 +238,7 @@ func (f *fakeBrowser) handle(tool string, raw json.RawMessage) *mcp.CallToolResu
 		out := text(codeSection("await page.click()") + f.openTabsSection() + f.pageSection())
 		if f.breakAfterClick != "" {
 			f.badTabs = f.breakAfterClick
+			f.badTabsIsError = f.clickTabsError
 		}
 		return out
 	case "browser_type":

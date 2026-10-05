@@ -33,19 +33,16 @@ func init() {
 			{Name: "DEVICE", Help: "device that runs the model service"},
 			{Name: "SERVICE", Help: "model service on DEVICE"},
 		},
-		Summary: "print provider config that lets an agent here use SERVICE on DEVICE",
+		Summary: "print OpenAI-compatible config for SERVICE on DEVICE",
 		Flags: func(fs *flag.FlagSet) {
-			choiceFlag(fs, "for", "openai", "which client config to print", "omp", "pi", "openai")
-			fs.String("agent", "", "required for generic config; agent whose messh token is the API key")
+			fs.String("agent", "", "required; agent whose messh token is the API key")
 			listFlag(fs, "model", "model `ID` to configure (repeatable; default: ask the service)")
 			fs.Duration("timeout", 30*time.Second, "how long to wait for the model list (`DURATION`; the owner may have to approve it)")
 		},
-		Output: `{for, provider, base_url, api_key_command, models[], config}`,
+		Output: `{provider, base_url, api_key_command, models, config}`,
 		Person: "the owner of DEVICE may have to approve listing models",
 		Waits:  "up to --timeout for the service's model list when --model is not given",
 		Examples: []string{
-			"messh llm config desktop unsloth --for omp",
-			"messh llm config desktop unsloth --for pi",
 			"messh llm config desktop unsloth --agent model-client --model llama-3",
 		},
 		Run: func(c *Context) error { return runLLMConfig(c) },
@@ -108,15 +105,13 @@ func runLLMConfig(c *Context) error {
 		return err
 	}
 	device, service := c.Args[0], c.Args[1]
-	harness := c.String("for")
 	agent := c.String("agent")
+	if !c.Set("agent") || agent == "" {
+		return usageErrorf("--agent NAME is required (the agent whose token the client will use)")
+	}
 	models := c.List("model")
 	timeout := c.Duration("timeout")
 
-	agent, err = llmConfigAgent(harness, agent)
-	if err != nil {
-		return err
-	}
 	if _, err := paths.AgentToken(agent); err != nil {
 		return fmt.Errorf("agent %q is not registered on this device: run `messh agent add %s` first", agent, agent)
 	}
@@ -165,22 +160,24 @@ func runLLMConfig(c *Context) error {
 		"\"this model\" or \"any model on %s\" so later requests start at once. A client that times out and retries asks again.",
 		svc.Device, svc.Service)
 
-	var human strings.Builder
-	var cfgVal any
-	text, cfgVal, err := renderLLMClientConfig(harness, provider, svc.BaseURL, tokenCmd, models, modelErr, wait, svc.Service)
-	if err != nil {
-		return err
+	var text strings.Builder
+	fmt.Fprintf(&text, "Base URL  %s\nAPI key   the output of %s (sent as Authorization: Bearer; x-api-key works too)\n", svc.BaseURL, tokenCmd)
+	if len(models) > 0 {
+		fmt.Fprintf(&text, "Models    %s\n", strings.Join(models, ", "))
 	}
-	human.WriteString(text)
+	fmt.Fprintf(&text, "\nFor the OpenAI SDKs and most tools:\n  export OPENAI_BASE_URL=%s\n  export OPENAI_API_KEY=\"$(%s)\"\n"+
+		"PowerShell:\n  $env:OPENAI_BASE_URL = '%s'\n  $env:OPENAI_API_KEY = (%s)\n"+
+		"Anthropic-style clients: base URL %s (POST /v1/messages), same key as x-api-key.\n\n%s\n"+
+		"Keep client timeouts at 10 minutes or more while prompts are pending (the OpenAI SDKs default to 10 minutes).\n",
+		svc.BaseURL, tokenCmd, svc.BaseURL, tokenCmd, strings.TrimSuffix(svc.BaseURL, "/v1"), wait)
 	return c.Emit(map[string]any{
-		"for":             harness,
 		"provider":        provider,
 		"base_url":        svc.BaseURL,
 		"api_key_command": tokenCmd,
 		"models":          models,
-		"config":          cfgVal,
+		"config":          text.String(),
 	}, func(w io.Writer) {
-		io.WriteString(w, human.String())
+		io.WriteString(w, text.String())
 	})
 }
 

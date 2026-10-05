@@ -1,6 +1,6 @@
 # messh reference
 
-Detailed command, feature, network, and operational reference. Start with the [README quick start](../README.md#quick-start); harness-specific setup lives in [integrations/omp](../integrations/omp/README.md) and [integrations/pi](../integrations/pi/README.md).
+Detailed command, feature, network, and operational reference. Start with the [README quick start](../README.md#quick-start).
 
 ## Requirements, platforms, and installation
 
@@ -45,10 +45,10 @@ This is for headless operation; it does not create a desktop session for approva
 
 The CLI is non-interactive and supports `--json` for machine-readable results. Use `messh describe --json` or `messh COMMAND -h` for current command schemas and options rather than guessing. Exit codes: 0 success, 1 operation failed, 2 invalid usage, 3 no node running for the selected state directory, and 4 a person must act first. Pair approval/confirmation requires comparing the displayed short code on both devices.
 
-A shell-capable agent can use the bundled skill, but installation has no implicit harness target: supply a destination directory, or see the explicit adapters in the [integration guides](../integrations/omp/README.md) and [pi guide](../integrations/pi/README.md).
+A shell-capable agent can use the bundled skill, installed to any explicitly chosen directory with `messh skill install --dir DIR`.
 
 ```sh
-messh skill install --dir "$HOME/.agents/skills"   # choose your destination
+messh skill install --dir DIR
 messh skill show
 ```
 
@@ -70,7 +70,7 @@ messh update --json         # explicitly install the main channel
 
 `messh update` explicitly opts this installation into the **main channel**, including source builds and tagged releases. It selects the greatest published main build number, not the most recently edited release or GitHub's stable-only `releases/latest` endpoint. A newer installed main build is never downgraded; a source build at the same commit is not treated as the published build. There are no background upgrades, arbitrary-source flags, or force-update option. Only the updater contacts GitHub; mesh traffic remains LAN-only.
 
-Before stopping anything, the updater verifies release metadata, SHA-256 checksums, archive layout, and the staged executable's embedded identity. It replaces the executable at its existing path and retains `<executable>.previous`. Pairings, identity keys, agent tokens, approvals/rules, jobs, files, service configuration, and firewall paths are preserved. It updates only the executable; the separately installed pi extension is not upgraded.
+Before stopping anything, the updater verifies release metadata, SHA-256 checksums, archive layout, and the staged executable's embedded identity. It replaces the executable at its existing path and retains `<executable>.previous`. Pairings, identity keys, agent tokens, approvals/rules, jobs, files, service configuration, and firewall paths are preserved. It updates only the executable.
 
 A running node must use a recognized existing per-user launcher: `messh.service` under Linux `systemd --user`, or the `messh` Scheduled Task in the current Windows desktop session. The updater validates the launcher, executable, state directory, and process ownership; it does not guess how to restart custom/unmanaged processes. For an unsupported launcher, finish active work, stop it manually, update while stopped, and restart it yourself. Updating a stopped installation does not start a node. Symlink installations are refused rather than replacing an unexpected target.
 
@@ -171,7 +171,7 @@ not execute staging files as privileged code. The protected route files remain
 administrator/SYSTEM-owned.
 ## Tools
 
-Tool visibility is configured per agent. The default `compact` mode lists mesh-wide discovery/call tools; the agent invokes a target tool through `mesh_call`. `full` mode also lists every target tool as `<device>__<tool>`. Manage it with:
+Tool visibility is configured per agent. The default `compact` mode provides mesh-wide discovery/call tools; use `mesh_call` to invoke a target tool. `full` mode instead exposes target tools directly as `<device>__<tool>`. Both modes work with generic MCP clients; no client adapter is required. Manage visibility with:
 
 ```sh
 messh agent ls
@@ -255,11 +255,10 @@ for Anthropic-style clients). On the client device:
 
 ```sh
 messh llm ls                              # model services on the mesh and their local base URLs
-messh llm config desktop unsloth --for openai --agent assistant   # generic base URL + key
+messh llm config DEVICE SERVICE --agent NAME
 ```
 
-The generated configuration uses a runtime token command rather than writing the token into a file. Model IDs come from the service's `/v1/models` (or `--model ID`). For harness-specific model configuration, see the explicit integration guides. Requests stream over the mesh (server-sent events arrive as they are
-generated; bodies up to 32 MiB) and closing the client stops the generation upstream.
+The command emits generic OpenAI-compatible configuration only: `{provider, base_url, api_key_command, models, config}`. It does not render client-specific formats. Use secure secret management or a runtime command mechanism supported by your client; never publish or persist bearer tokens. Model IDs come from the service's `/v1/models` (or a selected model). Requests stream over the mesh (server-sent events arrive as generated; bodies up to 32 MiB), and closing the client stops generation upstream.
 Only `GET /v1/models` and `POST` to `/v1/chat/completions`, `/v1/completions`,
 `/v1/embeddings`, `/v1/responses` and `/v1/messages` are forwarded; everything else
 is 404. A service URL that already ends in `/v1` (Ollama's `http://127.0.0.1:11434/v1`)
@@ -290,7 +289,7 @@ published until the owner runs, on the device with the browser:
 
 ```sh
 messh browser setup --mode profile --channel chrome
-messh browser status      # Node, Playwright MCP, browser path, does it start (opens no window)
+messh browser status      # checks startup in a temporary profile; may briefly open a window
 ```
 
 Two modes:
@@ -298,6 +297,9 @@ Two modes:
 - **`profile`** (recommended): a dedicated browser profile only agents use, at
   `<state>/browser/profile`. `messh browser login` opens it as an ordinary browser
   window (no automation) so you can sign in to the sites agents should use, once.
+  Close that sign-in window before agents connect: automation needs exclusive use of
+  the profile. A profile already in use is a startup failure, not a successful browser
+  connection; messh leaves the existing window alone and reports the launch error.
   `messh browser reset-profile --yes` deletes it. The first call after a start takes a couple of
   seconds (more if npx must download Playwright); a start still running after 25 s
   answers with a "still starting, retry" error instead of blocking.
@@ -332,7 +334,10 @@ where the browser ended up *before* returning any content. If a tab is on a site
 approved, a second approval for that site is requested through the same gate, mid-call (so
 it prompts, honours saved rules and is audited like any other); the result is held back
 until you answer. Deny, and the tab is reset to a blank page (an extra tab is closed) and
-the agent gets only a refusal. The tab list the agent sees shows sites only, never titles.
+the agent gets only a refusal. An unreadable or error-marked tab list also withholds the
+result. If resetting or closing an unapproved tab fails, messh stops its browser automation
+rather than continuing with an unverifiable page. The tab list the agent sees shows sites
+only, never titles or URL paths.
 
 ```sh
 messh browser allow github.com       # view without asking; interacting still asks. *.example.com covers subdomains
@@ -351,10 +356,7 @@ Screenshots and PDFs are saved as `artifacts/browser/ab12cd.png` and returned as
 images are also returned inline). `browser_file_upload` takes `ws/...` or `artifacts/...`
 refs only. A `filename` argument is refused.
 
-This is human approval, not a sandbox: a page you approve can still send what is on it
-anywhere, runs with your network access, and a redirect chain is judged by where it ends.
-Register messh in omp under a name other than `browser` or `playwright` (for example
-`messh`): omp silently drops MCP servers with those names while its built-in browser is on.
+This is human approval, not a sandbox: a page you approve can still send what is on it anywhere, runs with your network access, and a redirect chain is judged by where it ends.
 
 ## Approvals
 
@@ -698,18 +700,6 @@ For a manual mesh smoke check, run nodes on two devices, follow
 [pairing](../README.md#pair-devices), then use the generic client setup in the [quick start](../README.md#connect-a-generic-mcp-client).
 Keep test state separate from your real node with `--state DIR`.
 
-For the pi extension, use **Node.js 24** (the test runner executes `.ts` directly):
-
-```sh
-cd integrations/pi
-npm ci
-npm run check
-npm test
-```
-
-The committed npm lockfile makes development and CI dependency installation
-reproducible. See [pi development notes](../integrations/pi/README.md#development)
-for the extension layout and API compatibility.
 
 ## CI and releases
 
@@ -717,7 +707,6 @@ The [CI workflow](https://github.com/dominic-codespoti/messh/actions/workflows/c
 runs on pushes and pull requests:
 
 - Native Go tests and vet on Ubuntu and Windows, using the Go version in `go.mod`. Windows runs test packages serially (`go test -p 1`) to reduce cold PowerShell startup contention. The ACL/exclusive-create fixture uses its existing 20-second test context for creation and security inspection; production launcher commands retain their separate 10-second bound.
-- pi extension type checking and tests on Node.js 24 with `npm ci`.
 - Workflow validation with actionlint and full Git history secret scanning with Gitleaks.
 - Pure-Go archives for `windows-amd64`, `linux-amd64`, and `linux-arm64`, plus
   SHA-256 checksums, available as artifacts on a successful workflow run.
@@ -738,8 +727,7 @@ Ordinary source builds report version `0.1.0-dev`. The release packaging script 
 
 The `release-assets` CI artifact contains `messh-<version>-windows-amd64.zip`,
 `messh-<version>-linux-amd64.tar.gz`, `messh-<version>-linux-arm64.tar.gz`, and
-`SHA256SUMS`. Each archive includes the executable, README, MIT license, and
-the pi extension under `integrations/pi/`.
+`SHA256SUMS`. Each archive contains the executable, README, and MIT license.
 
 When downloading a build, compare its SHA-256 against the accompanying checksum
 file before installation. CI artifacts are development snapshots, not tagged releases.

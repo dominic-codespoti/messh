@@ -107,37 +107,10 @@ jobs:
             go test -count=1 -timeout 5m ./...
           fi
 
-  pi:
-    name: Pi extension (Node 24)
-    needs: version
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: integrations/pi
-    steps:
-      - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - name: Set up Node
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: integrations/pi/package-lock.json
-      - name: Install locked dependencies
-        run: npm ci
-      - name: Audit development dependencies
-        run: npm audit --audit-level=high
-      - name: Check TypeScript
-        run: npm run check
-      - name: Test pi extension
-        run: npm test
 
   artifacts:
     name: Build release archives
-    needs: [version, checks, go, pi]
+    needs: [version, checks, go]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

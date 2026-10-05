@@ -502,31 +502,3 @@ func TestSkillFrontmatter(t *testing.T) {
 		t.Errorf("description length = %d, want 1-1024 chars", len(desc))
 	}
 }
-
-// The install defaults must be the real skill directories of each harness.
-func TestSkillDefaultDirs(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
-	for harness, want := range map[string]string{
-		"omp":    filepath.Join(tmp, ".omp", "agent", "skills"),
-		"pi":     filepath.Join(tmp, ".pi", "agent", "skills"),
-		"agents": filepath.Join(tmp, ".agents", "skills"),
-	} {
-		dir, err := skillDirFor(harness)
-		if err != nil {
-			t.Errorf("skillDirFor(%q) failed: %v", harness, err)
-			continue
-		}
-		if dir != want {
-			t.Errorf("skillDirFor(%q) = %q, want %q", harness, dir, want)
-		}
-	}
-	if _, err := skillDirFor("bogus"); err == nil {
-		t.Error("skillDirFor(bogus) succeeded, want an error")
-	}
-	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(tmp, "custom-agent"))
-	if dir, err := skillDirFor("omp"); err != nil || dir != filepath.Join(tmp, "custom-agent", "skills") {
-		t.Errorf("skillDirFor(omp) with PI_CODING_AGENT_DIR = %q, %v", dir, err)
-	}
-}

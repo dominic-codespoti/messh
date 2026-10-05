@@ -26,7 +26,7 @@ Discover `job_events` via `mesh_tools`; it accepts `cursor`, `limit` (1..128), a
 
 ## Optional negotiated MCP Tasks (2026 extension)
 
-The gateway advertises support for `io.modelcontextprotocol/tasks`. To request Task results, include this metadata on each tool call and Tasks method request:
+The gateway advertises support for `io.modelcontextprotocol/tasks`. To request Task results, include this client-capability metadata on each tool call and Tasks method request; ordinary job calls do not need Tasks negotiation:
 
 ```json
 {

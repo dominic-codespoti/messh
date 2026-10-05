@@ -542,8 +542,7 @@ func (u *upstream) launchProcess(ctx context.Context, cfg Config) (*session, err
 	go func() { t.Wait(); close(exited) }()
 	s := &session{stop: func() { t.Kill(); <-exited }, exited: exited, out: out, pid: t.PID(), started: time.Now()}
 	fail := func(err error) (*session, error) {
-		t.Kill()
-		<-exited
+		stopSession(s)
 		return nil, err
 	}
 
@@ -572,8 +571,15 @@ func (u *upstream) launchProcess(ctx context.Context, cfg Config) (*session, err
 	// real call is not also the browser launch. (Extension mode connects to the
 	// owner's browser on the first call and has its own wait.)
 	if cfg.Mode != ModeExtension {
-		if _, err := s.conn.Call(ctx, "browser_tabs", json.RawMessage(`{"action":"list"}`)); err != nil {
+		res, err := s.conn.Call(ctx, "browser_tabs", json.RawMessage(`{"action":"list"}`))
+		if err != nil {
 			return fail(fmt.Errorf("the browser did not launch: %s (%s)", catalog.DescribeErr(err), describeOutput(out.String())))
+		}
+		if res.IsError {
+			return fail(fmt.Errorf("the browser did not launch: browser_tabs returned an error (%s; %s)", clip(describeOutput(textOf(res)), 1024), describeOutput(out.String())))
+		}
+		if _, err := ParseTabs(textOf(res)); err != nil {
+			return fail(fmt.Errorf("the browser did not launch: cannot verify browser tabs (%v; %s)", err, describeOutput(out.String())))
 		}
 		s.connected = true
 	}
