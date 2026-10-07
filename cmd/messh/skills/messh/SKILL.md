@@ -38,7 +38,7 @@ device owner:
 - `pair approve|confirm|accept`, `unpair`
 - `agent rm`, `agent token` (prints a secret into this transcript)
 - `firewall allow|remove`, `browser reset-profile`, `service rm`
-- `grant add|rm`, `recipe publish|disable` (owner policy mutations)
+- `grant add|rm`, `trust add|rm`, `recipe publish|disable` (owner policy mutations)
 
 Never approve your own pending requests, and never route around an approval
 (a different agent name, device, or call path) to avoid one.
@@ -76,6 +76,13 @@ What is waiting for approval?
 `messh approvals --json` — report the requests to the user. Do not answer
 them; answering is the owner's job.
 
+Which devices bypass approval here?
+
+`messh trust ls --json` — exact device IDs trusted for every agent and exposed
+action on THIS node. This is permanent until revoked or unpaired, not reciprocal.
+Changing it requires the owner’s exact instruction. Authentication, job ownership,
+workspace boundaries, and read-only artifacts still apply.
+
 Which services are registered here?
 
 `messh service ls --json` — name, kind, URL, enabled, up/down, latency, info.
@@ -94,7 +101,15 @@ Network trouble?
 each ok/warn/fail/unknown with a Fix list. Changes nothing.
 
 ## Capability checks and job recipes
-Discover exact tools and schemas with `mesh_tools`; never guess arguments. `capability_list` shows caller grants. `capability_check` is a preview, not approval or execution; use only its returned exact `args_hash`. Never run grant mutations or recipe publish/disable without the owner’s exact instruction. File access is deny-by-default; pairing grants no file access.
+Discover exact tools and schemas with `mesh_tools`; never guess arguments.
+`capability_list` shows only the caller’s finite grants, not device-wide trust.
+`capability_check` previews authorization without executing; `trusted_device`
+means an explicit owner policy authorizes this device across all its agents.
+Use only its returned native exact `args_hash` when creating a narrow tool grant.
+Never run grant/trust mutations or recipe publish/disable without the owner’s
+exact instruction. File access is deny-by-default; pairing alone grants no file
+access, while explicit device-wide trust permits workspace read/write and
+artifact reads without finite grants.
 
 Discover recipes with `recipe_list`, inspect exact name/version/digest and typed parameter schema through `recipe_get`, then use the returned digest and schema-valid parameters in `job_submit`. Disable prevents new submissions, not accepted jobs.
 
@@ -108,7 +123,9 @@ Discover `job_events` schema via `mesh_tools`; persist opaque cursors. On expira
 
 Use native `job_submit` for background work on a node; remotely the tool is
 `<device>__job_submit`. Prefer `command` plus `args` (not `shell`). Every
-submission needs owner approval. Supply a caller-persisted `request_id` when a
+submission follows the owner’s approval policy; a saved rule, capability grant,
+or trusted-device policy may approve it automatically. Supply a caller-persisted
+`request_id` when a
 submit may be retried after a lost response; retry only the same key and exact
 payload. Follow the returned `job_id` with `job_status` / `job_wait`, inspect
 output with `job_logs`, and use `job_list` to find jobs. Cancel only when

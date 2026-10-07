@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"messh/internal/control"
 	"messh/internal/roster"
+	"messh/internal/trust"
 )
 
 // cliAgent is the agent name recorded for calls made with the control token.
@@ -40,6 +42,7 @@ func (n *Node) localHandler() http.Handler {
 	n.registerUpdateAPI(api)
 	n.registerGrantAPI(api)
 	n.registerRecipeAPI(api)
+	n.registerTrustAPI(api)
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", n.gateway.Handler(n.verifyAgent, n.agentMode))
@@ -112,9 +115,15 @@ func (n *Node) apiPeers(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (n *Node) apiUnpair(w http.ResponseWriter, r *http.Request) {
+	n.trustMu.Lock()
+	defer n.trustMu.Unlock()
 	p, err := resolvePeer(n.roster.List(), r.PathValue("peer"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := n.trust.Remove(p.ID); err != nil && !errors.Is(err, trust.ErrNotFound) {
+		writeError(w, http.StatusInternalServerError, "revoke device trust: "+err.Error())
 		return
 	}
 	if _, err := n.roster.Remove(p.ID); err != nil {

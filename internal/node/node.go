@@ -34,6 +34,7 @@ import (
 	"messh/internal/provider/nodeinfo"
 	"messh/internal/roster"
 	"messh/internal/state"
+	"messh/internal/trust"
 )
 
 const (
@@ -79,6 +80,8 @@ type Node struct {
 	remoteJobs *remoteJobOutbox
 	files      *fileService
 	grants     *grants.Store
+	trust      *trust.Store
+	trustMu    sync.Mutex // serializes trust admission with unpairing
 	jobs       *jobs.Provider
 	browser    browserControl // the browser provider's control surface (stop, status)
 
@@ -152,6 +155,10 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	trusted, err := trust.New(opts.Paths.TrustFile())
+	if err != nil {
+		return nil, fmt.Errorf("load trusted devices: %w", err)
+	}
 	approvals, err := newApprovalEngine(opts, log)
 	if err != nil {
 		return nil, err
@@ -189,6 +196,7 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		build:        buildinfo.Current(),
 		started:      time.Now(),
 		roster:       ro,
+		trust:        trusted,
 		tools:        map[string]localTool{},
 		pairing:      newPairing(),
 		sightings:    map[string]discovery.Sighting{},

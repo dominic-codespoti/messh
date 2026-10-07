@@ -42,10 +42,7 @@ func (n *Node) startFiles() error {
 	n.register(filesprov.NewAuthorized(store, func(c provider.Caller, ref, action string) grants.Decision {
 		return n.fileProviderDecision(c, ref, action)
 	}, func(c provider.Caller, requested, entry, action string) bool {
-		if c.DeviceID == n.id.ID && c.Agent == cliAgent {
-			return true
-		}
-		return n.grants.CanSee(grants.Subject{DeviceID: c.DeviceID, Agent: c.Agent}, requested, entry, action)
+		return n.fileGrantVisible(c.DeviceID, c.Agent, requested, entry, action)
 	}))
 	n.rebuildTools()
 	n.gateway.AddTool(meshCopyTool(), n.files.meshCopy)

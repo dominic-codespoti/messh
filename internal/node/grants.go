@@ -73,8 +73,8 @@ type capabilityCheckResult struct {
 
 func (p *capabilityProvider) Tools() []provider.Tool {
 	return []provider.Tool{
-		{Class: provider.ClassInfo, Def: &mcp.Tool{Name: "capability_list", Description: "List this caller's grants only.", InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`)}},
-		{Class: provider.ClassInfo, Def: &mcp.Tool{Name: "capability_check", Description: "Preview the grant decision. Tool checks prepare the native provider request without executing it; other owner approval policy can still apply.", InputSchema: json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","enum":["tool","file"]},"tool":{"type":"string"},"args":{},"path":{"type":"string"},"action":{"type":"string","enum":["read","write"]}},"required":["kind"],"additionalProperties":false}`)}}}
+		{Class: provider.ClassInfo, Def: &mcp.Tool{Name: "capability_list", Description: "List this caller's finite grants only; device trust policies are not listed.", InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`)}},
+		{Class: provider.ClassInfo, Def: &mcp.Tool{Name: "capability_check", Description: "Preview the effective grant or trusted-device authorization. Tool checks prepare the native provider request without executing it; other owner approval policy can still apply.", InputSchema: json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","enum":["tool","file"]},"tool":{"type":"string"},"args":{},"path":{"type":"string"},"action":{"type":"string","enum":["read","write"]}},"required":["kind"],"additionalProperties":false}`)}}}
 }
 func (p *capabilityProvider) Call(ctx context.Context, tool string, raw json.RawMessage, caller provider.Caller) (*mcp.CallToolResult, error) {
 	sub := grants.Subject{DeviceID: caller.DeviceID, Agent: caller.Agent}
@@ -113,9 +113,16 @@ func (p *capabilityProvider) Call(ctx context.Context, tool string, raw json.Raw
 		req.Tool = in.Tool
 		req.ArgsHash = ap.Exact
 		out.ArgsHash = ap.Exact
-		out.Note = "Grant decision only; other owner approval policies may still apply."
+		out.Note = "Authorization preview only; other owner approval policies may still apply."
+		if p.node.trust.Allows(caller.DeviceID) {
+			out.Decision = grants.Decision{Allowed: true, Code: "trusted_device"}
+			return provider.JSONResult(out)
+		}
 	} else if in.Kind != "file" {
 		return provider.ErrorResult("kind must be tool or file"), nil
+	} else {
+		out.Decision = p.node.fileGrantDecision(caller.DeviceID, caller.Agent, in.Path, in.Action)
+		return provider.JSONResult(out)
 	}
 	out.Decision = p.store.Decide(sub, req)
 	return provider.JSONResult(out)

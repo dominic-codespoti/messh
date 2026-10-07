@@ -19,14 +19,44 @@ func (n *Node) fileGrantDecision(deviceID, agent, ref, action string) grants.Dec
 	if deviceID == n.id.ID && agent == cliAgent {
 		return grants.Decision{Allowed: true, Code: "owner"}
 	}
+	if n.trust.Allows(deviceID) {
+		parsed, err := files.ParseRef(ref)
+		if err != nil || (action != "read" && action != "write") {
+			return grants.Decision{Code: "invalid_request"}
+		}
+		if parsed.Root() == files.RootArtifacts && action != "read" {
+			return grants.Decision{Code: "read_only_artifact"}
+		}
+		return grants.Decision{Allowed: true, Code: "trusted_device"}
+	}
 	return n.grants.Decide(grants.Subject{DeviceID: deviceID, Agent: agent}, grants.Request{Kind: "file", Path: ref, Action: action})
 }
 func (n *Node) fileGrantVisible(deviceID, agent, requested, entry, action string) bool {
 	if deviceID == n.id.ID && agent == cliAgent {
 		return true
 	}
+	if n.trust.Allows(deviceID) {
+		if action != "read" && action != "write" {
+			return false
+		}
+		entryRef, err := files.ParseRef(entry)
+		if err != nil || (entryRef.Root() == files.RootArtifacts && action != "read") {
+			return false
+		}
+		if requested == "" {
+			return true
+		}
+		requestedRef, err := files.ParseRef(requested)
+		return err == nil && refWithin(requestedRef, entryRef)
+	}
 	return n.grants.CanSee(grants.Subject{DeviceID: deviceID, Agent: agent}, requested, entry, action)
 }
+
+func refWithin(parent, child files.Ref) bool {
+	p, c := string(parent), string(child)
+	return c == p || len(c) > len(p) && strings.HasPrefix(c, p) && c[len(p)] == '/'
+}
+
 func (n *Node) fileProviderDecision(c provider.Caller, ref, action string) grants.Decision {
 	return n.fileGrantDecision(c.DeviceID, c.Agent, ref, action)
 }

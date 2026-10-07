@@ -210,12 +210,15 @@ func (n *Node) gate(ctx context.Context, lt localTool, name string, args json.Ra
 	if err != nil {
 		return ctx, nil, provider.ErrorFrom(err, name+" refused on "+n.name)
 	}
-	// A grant delegates this admission, not unchecked execution: the provider
-	// above still prepares the exact request and verifies it again at launch.
-	decision := n.grants.Decide(grants.Subject{DeviceID: caller.DeviceID, Agent: caller.Agent},
-		grants.Request{Kind: "tool", Tool: name, ArgsHash: ap.Exact})
-	if decision.Allowed {
-		ap.Auto = "capability grant " + decision.GrantID
+	// Authorization never skips native request preparation or launch validation.
+	if n.trust.Allows(caller.DeviceID) {
+		ap.Auto = "trusted device"
+	} else {
+		decision := n.grants.Decide(grants.Subject{DeviceID: caller.DeviceID, Agent: caller.Agent},
+			grants.Request{Kind: "tool", Tool: name, ArgsHash: ap.Exact})
+		if decision.Allowed {
+			ap.Auto = "capability grant " + decision.GrantID
+		}
 	}
 	g := &gateState{n: n, req: approval.Request{Caller: caller, Tool: name, Class: lt.tool.Class, Approval: ap}}
 	if ap.Deferred {

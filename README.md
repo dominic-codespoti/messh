@@ -32,7 +32,7 @@ messh node --name desktop    # device A
 messh node --name worker     # device B
 ```
 
-Agents discover remote tool schemas before calls. File access is deny-by-default: pairing alone does not grant files, and there is no blanket paired-peer migration. Owners may add finite path/action-scoped grants; see [capabilities and recipes](docs/jobs.md#capability-discovery-checks-and-owner-controlled-grants).
+Agents discover remote tool schemas before calls. File access remains subject to the target node's resource boundaries; pairing alone does not grant access. Owners may add finite path/action-scoped grants; see [capabilities and recipes](docs/jobs.md#capability-discovery-checks-and-owner-controlled-grants). An owner may separately add device-wide trust on a receiving node, which auto-approves every agent and exposed action from that paired device on that node only.
 ### Pair devices
 
 Pairing is two-sided: a person compares a short code on both nodes. On device A, open the acceptance window:
@@ -83,6 +83,7 @@ Accepted jobs are persisted with stable IDs and recover after node restart. A ru
 
 ## Agent-first capabilities
 
+- **Trusted devices:** messh trust ls, messh trust add DEVICE, and messh trust rm DEVICE manage permanent, revocable trust on the node where the command runs. Trust applies to every agent and exposed action from that device on that node, bypassing its normal approval prompt; it can allow commands or services to modify or delete the node owner's files. Unpairing revokes trust. This is not a sandbox or resource-boundary bypass: authentication, valid file references, workspace limits, and read-only artifact rules still apply. Keep this distinct from finite, agent-scoped grants.
 - **Scoped grants:** agents discover their capabilities and check an exact request; owners issue finite, revocable tool or path/action grants. File access is denied by default, including on paired peers.
 - **Typed job recipes:** discover an owner-published name/version/digest and parameter schema, then submit it through the native job API. Accepted snapshots and retry keys remain stable after disable or restart.
 - **Durable events:** resume owner-filtered lifecycle events with opaque cursors, including origin delivery observations while a target is offline. Status remains authoritative; logs use separate byte offsets.
@@ -95,7 +96,7 @@ The local agent talks to its node over loopback MCP. The node routes calls to pa
 
 ## Security
 
-Peer connections use pinned, mutually authenticated TLS; the agent endpoint is loopback-bound and uses per-agent bearer tokens. Keep both endpoints private and do not port-forward them. Approval prompts are consent, **not** an OS sandbox: jobs, services, and browser actions run with the node owner's privileges. Use ordinary OS accounts, filesystem permissions, and network controls as the real containment boundary. Pair only devices you trust. See the [full security model](docs/reference.md#security-model).
+Peer connections use pinned, mutually authenticated TLS; the agent endpoint is loopback-bound and uses per-agent bearer tokens. Keep both endpoints private and do not port-forward them. Approval prompts are consent, **not** an OS sandbox: jobs, services, and browser actions run with the node owner's privileges. Device-wide trust is especially broad: every agent and exposed action from the trusted device is automatically approved on the node that stores that trust, and actions can modify or delete user files. Trust does not propagate to the other node and does not bypass authentication or resource boundaries. Use ordinary OS accounts, filesystem permissions, and network controls as the real containment boundary. Pair only devices you trust. See the [full security model](docs/reference.md#security-model).
 
 ## Troubleshooting
 
